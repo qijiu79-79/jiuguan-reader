@@ -65,6 +65,7 @@ interface ReaderSettingsViewHarness extends ReaderViewHarness {
   modelSelectionChanged(): void;
   modelInputChanged(): void;
   updateGenerationVisibility(): void;
+  syncApiKey(force?: boolean, settings?: ReaderSettings): void;
   markSettingsDirty(message?: string): void;
   saveSettings(save: FakeElement): Promise<void>;
   hasUnsavedInput(): boolean;
@@ -310,7 +311,10 @@ function createFakeReaderSettingsHost(
     async saveSettings(next: ReaderSettings, draftApiKey?: string) {
       saveCalls += 1;
       await options.beforeSave?.(next, draftApiKey);
-      settings = next;
+      settings = { ...next, customApiKeys: { ...settings.customApiKeys } };
+      if (next.connection.mode === 'custom' && draftApiKey?.trim()) {
+        settings.customApiKeys![next.connection.baseUrl!] = draftApiKey.trim();
+      }
     },
     getProfiles: () => profiles,
     getConnectionInfo(connection: ReaderConnection) {
@@ -448,6 +452,7 @@ function createReaderSettingsView(
   form.append(settingsStatus);
 
   connectionMode.addEventListener('change', () => view.connectionChanged());
+  apiUrlInput.addEventListener('input', () => view.syncApiKey());
   profileInput.addEventListener('change', () => view.connectionChanged());
   modelSelect.addEventListener('change', () => view.modelSelectionChanged());
   modelInput.addEventListener('input', () => view.modelInputChanged());
@@ -466,7 +471,7 @@ test('独立API有直接填写地址Key和模型的入口，旧连接档案保�
   assert.match(viewSource, /option\('profile', '酒馆已保存的连接配置'\)/u);
   assert.match(viewSource, /jgr-api-url/u);
   assert.match(viewSource, /jgr-api-key/u);
-  assert.match(viewSource, /Key 只在当前页面保留/u);
+  assert.match(viewSource, /Key 和模型保存到当前酒馆用户/u);
   const spies = emptySpies();
   await withFakeBrowser(spies, async () => {
     const { view } = createReaderSettingsView(spies);
@@ -531,7 +536,7 @@ test('独立拉取用未保存表单地址和Key，不要求模型，不保存�
   });
 });
 
-test('独立API手填模型可直接保存，Key单独传递不进入设置；保存失败保留输入', async () => {
+test('独立API手填模型和Key可保存，成功后重开恢复Key，保存失败保留输入', async () => {
   const spies = emptySpies();
   let sentKey: string | undefined;
   let fail = true;
@@ -553,12 +558,41 @@ test('独立API手填模型可直接保存，Key单独传递不进入设置；�
     await view.saveSettings(new FakeElement('button', spies));
     assert.equal(sentKey, 'fictional-independent-key');
     assert.deepEqual(settingsHost.getSavedSettings().connection, { mode: 'custom', profileId: '', baseUrl: 'https://fictional.example.test/v1', model: 'a-long-provider/full-model-id' });
-    assert.equal(JSON.stringify(settingsHost.getSavedSettings()).includes('fictional-independent-key'), false);
-    assert.equal(view.apiKeyInput.value, '');
+    assert.equal(settingsHost.getSavedSettings().customApiKeys?.['https://fictional.example.test/v1'], 'fictional-independent-key');
+    assert.equal(view.apiKeyInput.value, 'fictional-independent-key');
     assert.equal(view.settingsDirty, false);
     view.openSettings();
     assert.equal(view.apiUrlInput.value, 'https://fictional.example.test/v1');
     assert.equal(view.modelInput.value, 'a-long-provider/full-model-id');
+    assert.equal(view.apiKeyInput.value, 'fictional-independent-key');
+    const anotherView = createReaderSettingsView(spies, settingsHost).view;
+    assert.equal(anotherView.apiKeyInput.value, 'fictional-independent-key');
+  });
+});
+
+test('更换API地址清除原地址Key，切回时恢复对应Key，同地址输入不覆盖草稿', async () => {
+  const spies = emptySpies();
+  const settingsHost = createFakeReaderSettingsHost({ ...defaultReaderSettings(),
+    connection: { mode: 'custom', profileId: '', baseUrl: 'https://first.example.test/v1', model: 'fake-model' },
+    customApiKeys: { 'https://first.example.test/v1': 'fictional-first', 'https://second.example.test/v1': 'fictional-second' },
+  });
+  await withFakeBrowser(spies, () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    assert.equal(view.apiKeyInput.value, 'fictional-first');
+    view.apiUrlInput.value = 'https://new.example.test/v1';
+    view.apiUrlInput.dispatch('input');
+    assert.equal(view.apiKeyInput.value, '');
+    view.apiUrlInput.value = 'https://second.example.test/v1';
+    view.apiUrlInput.dispatch('input');
+    assert.equal(view.apiKeyInput.value, 'fictional-second');
+    view.apiKeyInput.value = 'fictional-draft';
+    view.apiUrlInput.value += '/chat/completions';
+    view.apiUrlInput.dispatch('input');
+    assert.equal(view.apiKeyInput.value, 'fictional-draft');
+    view.apiUrlInput.value = 'https://first.example.test/v1';
+    view.apiUrlInput.dispatch('input');
+    assert.equal(view.apiKeyInput.value, 'fictional-first');
+    assert.equal(settingsHost.getSaveCalls(), 0);
   });
 });
 

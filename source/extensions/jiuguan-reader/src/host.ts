@@ -195,6 +195,7 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
   const customClient = createCustomConnectionClient({
     fetcher: dependencies.fetcher,
     getHeaders: () => getContext().getRequestHeaders?.() ?? {},
+    getSavedApiKey: (url) => normalizeReaderSettings(getContext().extensionSettings?.[EXTENSION_SETTINGS_KEY]).customApiKeys?.[url],
   });
 
   return {
@@ -287,17 +288,22 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       if (!extensionSettings) throw new Error('酒馆设置尚未加载；没有保存读卡设置。');
 
       const normalized = normalizeReaderSettings(settings);
+      const previous = extensionSettings[EXTENSION_SETTINGS_KEY];
+      const savedKeys = normalizeReaderSettings(previous).customApiKeys;
+      // The form only edits one connection. Saving prompts or parameters keeps all saved keys.
+      if (savedKeys) normalized.customApiKeys = { ...savedKeys };
       if (normalized.connection.mode === 'custom') {
         normalized.connection.baseUrl = resolveCustomApiBaseUrl(normalized.connection.baseUrl ?? '');
         if (!normalized.connection.model) throw new Error('请先为独立 API 选择或填写模型 ID。');
         if (/[\r\n]/u.test(draftApiKey ?? '')) throw new Error('API Key 不能包含换行，请检查粘贴的内容。');
+        if (draftApiKey?.trim()) {
+          normalized.customApiKeys = { ...normalized.customApiKeys, [normalized.connection.baseUrl]: draftApiKey.trim() };
+        }
       }
-      const previous = extensionSettings[EXTENSION_SETTINGS_KEY];
       extensionSettings[EXTENSION_SETTINGS_KEY] = normalized;
       try {
         const save = dependencies.saveNativeSettings ?? saveNativeSettings;
         await save(context);
-        if (normalized.connection.mode === 'custom') customClient.rememberApiKey(normalized.connection, draftApiKey);
       } catch {
         if (extensionSettings[EXTENSION_SETTINGS_KEY] === normalized) {
           if (previous === undefined) delete extensionSettings[EXTENSION_SETTINGS_KEY];

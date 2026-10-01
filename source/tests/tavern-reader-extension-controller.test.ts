@@ -85,6 +85,17 @@ test('快捷和自由追问保存为问答，不覆盖概览', async () => {
   assert.equal(fixture.controller.getState().unsaved, false);
 });
 
+test('持久独立Key只用于连接，不进入保存的解读、追问和来源快照', async () => {
+  const fixture = setup();
+  const fakeKey = 'fictional-persistent-reader-key';
+  fixture.host.getSettings = () => ({ ...defaultReaderSettings(), customApiKeys: { 'https://fictional.example.test/v1': fakeKey } });
+  await fixture.controller.loadCurrent();
+  await fixture.controller.read();
+  await fixture.controller.question('玩家与角色的关系？');
+  assert.equal(fixture.counts().saveCount, 2);
+  assert.equal(JSON.stringify(fixture.getSaved()).includes(fakeKey), false);
+});
+
 test('流式部分回答只是预览，失败或停止时不保存，也不覆盖旧解读', async () => {
   for (const cancel of [false, true]) {
     const fixture = setup();

@@ -51,6 +51,7 @@ export interface ReaderSettings {
   systemPrompt: string;
   analysisPrompt: string;
   connection: ReaderConnection;
+  customApiKeys?: Record<string, string>;
   generation: ReaderGenerationSettings;
   contextChars: number;
   maxOutputTokens: number;

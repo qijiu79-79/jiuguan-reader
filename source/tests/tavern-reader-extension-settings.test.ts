@@ -28,7 +28,7 @@ test('用户提示词包括空白和换行均保留原样，空系统提示词�
   assert.equal(normalizeReaderSettings({ systemPrompt: '' }).systemPrompt, '');
 });
 
-test('独立连接只保存配置ID，没有API密钥字段，快捷问题可修改和去重', () => {
+test('连接档案只保存配置ID，不采纳乱放的API密钥字段，快捷问题可修改和去重', () => {
   const settings = normalizeReaderSettings({
     apiKey: 'fake-key-do-not-store', connection: { mode: 'profile', profileId: 'fictional-profile', apiKey: 'fake' },
     quickQuestions: [' 经历？ ', '经历？', '', 4, '关系？'], contextChars: 96000, maxOutputTokens: 12000,
@@ -38,6 +38,24 @@ test('独立连接只保存配置ID，没有API密钥字段，快捷问题可修
   assert.equal(settings.contextChars, 96000);
   assert.equal(settings.maxOutputTokens, 12000);
   assert.equal('apiKey' in settings, false);
+});
+
+test('独立Key按规范化地址保存，忽略非法地址和换行，新对象不共享字典', () => {
+  const input = { customApiKeys: {
+    ' https://fictional.example.test/v1/chat/completions ': ' fictional-key ',
+    'https://second.example.test': 'fictional-second',
+    'https://bad.example.test?key=fake': 'fictional-invalid',
+    'file:///private/fake': 'fictional-invalid',
+    'https://empty.example.test': ' ',
+    'https://newline.example.test': 'fictional\ninvalid',
+  } };
+  const settings = normalizeReaderSettings(input);
+  assert.deepEqual(settings.customApiKeys, {
+    'https://fictional.example.test/v1': 'fictional-key',
+    'https://second.example.test/v1': 'fictional-second',
+  });
+  settings.customApiKeys!['https://fictional.example.test/v1'] = 'changed';
+  assert.equal(normalizeReaderSettings(input).customApiKeys?.['https://fictional.example.test/v1'], 'fictional-key');
 });
 
 test('非法数值恢复默认，默认快捷问题不共享可变数组', () => {

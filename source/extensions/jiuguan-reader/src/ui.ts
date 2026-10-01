@@ -41,6 +41,7 @@ export class ReaderView {
   private readonly noApiKeyInput = element('input');
   private readonly apiKeyNote = element('p', 'jgr-muted');
   private readonly apiKeyToggle = button('显示 Key');
+  private apiKeyAddress = '';
   private readonly modelSelect = element('select');
   private readonly modelInput = element('input');
   private readonly modelSummary = element('div', 'jgr-connection-summary');
@@ -199,6 +200,7 @@ export class ReaderView {
     this.apiUrlInput.placeholder = 'https://服务商地址/v1';
     this.apiUrlInput.addEventListener('input', () => {
       this.cancelModelRequest();
+      this.syncApiKey();
       this.availableModels = [];
       this.modelsStatus.hidden = true;
       this.updateModelOptions();
@@ -226,7 +228,7 @@ export class ReaderView {
     this.customConnectionFields.append(field('API 地址（OpenAI 兼容）', this.apiUrlInput),
       element('p', 'jgr-muted', '可填写 /v1 等完整前缀；只填域名时自动补 /v1。也可粘贴 /chat/completions 地址。'),
       keyLabel, noKeyLabel, this.apiKeyNote,
-      element('p', 'jgr-muted', '地址和模型可保存；Key 只在当前页面保留，刷新或退出后需重填。不写入浏览器存储，不改聊天用的 Key。无需先保存或填写模型就能拉取列表。'));
+      element('p', 'jgr-muted', '地址、Key 和模型保存到当前酒馆用户；填一次并保存，刷新或手机登录同一用户都能继续使用。不改聊天用的 Key。无需先保存或填写模型就能拉取列表。'));
     form.append(this.customConnectionFields);
     this.streamInput.id = 'jgr-stream';
     this.streamInput.type = 'checkbox';
@@ -471,7 +473,7 @@ export class ReaderView {
     this.analysisInput.value = settings.analysisPrompt;
     this.connectionMode.value = settings.connection.mode;
     this.apiUrlInput.value = settings.connection.baseUrl ?? '';
-    this.apiKeyInput.value = '';
+    this.syncApiKey(true, settings);
     this.apiKeyInput.type = 'password';
     this.apiKeyToggle.textContent = '显示 Key';
     this.streamInput.checked = settings.stream;
@@ -511,8 +513,17 @@ export class ReaderView {
     this.customConnectionFields.hidden = this.connectionMode.value !== 'custom';
     this.apiKeyInput.disabled = this.noApiKeyInput.checked;
     const remembered = this.host.hasCustomApiKey?.(this.formConnection(false)) ?? false;
-    this.apiKeyInput.placeholder = remembered ? '本页已填写，留空继续使用；刷新后需重填' : '填写 API Key（无密钥的本地接口可留空）';
-    this.apiKeyNote.textContent = remembered ? '本页已记住这个地址的 Key；不会把它用于另一个地址。' : '新地址不会借用酒馆聊天或其他地址的 Key。';
+    this.apiKeyInput.placeholder = remembered ? '已保存，可修改；留空继续使用已保存的 Key' : '填写 API Key（无密钥的本地接口可留空）';
+    this.apiKeyNote.textContent = remembered ? '这个地址的 Key 已保存，电脑和手机登录同一酒馆用户都可使用。' : '新地址填写一次并保存即可；不借用聊天或其他地址的 Key。';
+  }
+
+  private syncApiKey(force = false, settings = this.host.getSettings()): void {
+    let address = '';
+    try { address = resolveCustomApiBaseUrl(this.apiUrlInput.value); } catch { /* The address may still be a draft. */ }
+    if (force || address !== this.apiKeyAddress) {
+      this.apiKeyInput.value = address ? settings.customApiKeys?.[address] ?? '' : '';
+      this.apiKeyAddress = address;
+    }
   }
 
   private formConnection(includeModel = true): ReaderConnection {
@@ -657,7 +668,7 @@ export class ReaderView {
       if (this.settingsEditVersion === editVersionAtSave) {
         this.settingsDirty = false;
         if (raw.connection.mode === 'custom') {
-          this.apiKeyInput.value = '';
+          this.syncApiKey(true);
           this.updateProfileVisibility();
         }
         if (normalizedSettings.generation.inherit) {

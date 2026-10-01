@@ -52,7 +52,8 @@ test('Claude和Gemini正文及结束原因可解析，排除思考片段', async
 
 test('流式独立请求逐步显示、使用自己的Key和模型，结束才返回完整正文', async () => {
   let payload: Record<string, unknown> | undefined;
-  const host = createReaderHost({ getContext: () => ({ extensionSettings: {}, mainApi: 'textgenerationwebui' }), store, saveNativeSettings: async () => {}, fetcher: async (_url, init) => {
+  const context = { extensionSettings: {}, mainApi: 'textgenerationwebui' };
+  const host = createReaderHost({ getContext: () => context, store, saveNativeSettings: async () => {}, fetcher: async (_url, init) => {
     payload = JSON.parse(String(init?.body));
     return sse([delta('旧同事'), delta('重逢。 [S1]'), delta('', 'stop')], true, 5, null);
   } });
@@ -98,7 +99,8 @@ test('长度截断、流式错误、缺少结束原因均不当作成功，不�
     [[delta('部分'), { error: { message: 'invalid key fictional-key at https://private.example.test' } }], /invalid key/u],
   ] as const) {
     let calls = 0;
-    const host = createReaderHost({ getContext: () => ({ extensionSettings: {} }), store, saveNativeSettings: async () => {}, fetcher: async () => { calls += 1; return sse([...events]); } });
+    const context = { extensionSettings: {} };
+    const host = createReaderHost({ getContext: () => context, store, saveNativeSettings: async () => {}, fetcher: async () => { calls += 1; return sse([...events]); } });
     const settings = { ...defaultReaderSettings(), connection };
     await host.saveSettings(settings, 'fictional-key');
     await assert.rejects(host.generate(messages, settings, new AbortController().signal), (error: Error) => {

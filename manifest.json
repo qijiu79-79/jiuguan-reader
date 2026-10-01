@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "酒馆译卡 contributors",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "homePage": "https://github.com/qijiu79-79/jiuguan-reader",
   "minimum_client_version": "1.19.0"
 }

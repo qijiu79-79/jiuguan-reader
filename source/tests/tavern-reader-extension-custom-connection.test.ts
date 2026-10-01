@@ -39,26 +39,26 @@ test('用当前填写的地址和Key拉模型，不要求先保存或选择模�
   assert.equal(payloads[1]!.proxy_password, '', '不能把上次未保存的拉取草稿偷偷复用');
 });
 
-test('独立Key只保留于页面内存，按地址隔离，新客户端与持久设置中都没有Key', async () => {
+test('从同一酒馆用户恢复独立Key，新客户端直接可用且按地址隔离', async () => {
   const payloads: Record<string, unknown>[] = [];
-  const dependencies = { getHeaders: () => ({}), fetcher: async (_route: unknown, init?: RequestInit) => {
+  const saved = normalizeReaderSettings({ connection, customApiKeys: { [connection.baseUrl]: fakeKey } });
+  const dependencies = { getHeaders: () => ({}), getSavedApiKey: (url: string) => saved.customApiKeys?.[url], fetcher: async (_route: unknown, init?: RequestInit) => {
     payloads.push(JSON.parse(String(init?.body)));
     return Response.json({ data: [{ id: 'reader-model' }] });
   } };
   const client = createCustomConnectionClient(dependencies);
-  client.rememberApiKey(connection, fakeKey);
   await client.listModels(connection, new AbortController().signal);
   await client.listModels({ ...connection, baseUrl: 'https://other.example.test/v1' }, new AbortController().signal);
   assert.equal(payloads[0]!.proxy_password, fakeKey);
   assert.equal(payloads[1]!.proxy_password, '');
-  assert.equal(createCustomConnectionClient(dependencies).hasApiKey(connection), false);
+  assert.equal(createCustomConnectionClient(dependencies).hasApiKey(connection), true);
   const settings = normalizeReaderSettings({ connection: { ...connection, apiKey: fakeKey }, apiKey: fakeKey });
   assert.equal(settings.connection.mode, 'custom');
   assert.equal(settings.connection.baseUrl, connection.baseUrl);
   assert.equal(JSON.stringify(settings).includes(fakeKey), false);
 });
 
-test('保存独立API不动聊天配置或原生密钥，只在设置写入成功后记住Key', async () => {
+test('保存独立API不动聊天配置或原生密钥，失败回滚，成功后同用户新页面可直接使用', async () => {
   const context = { extensionSettings: {} as Record<string, unknown>, mainApi: 'openai', chatCompletionSettings: { custom_url: 'https://chat.example.test/v1', secret_id: 'fictional-chat-secret' } };
   const before = structuredClone(context.chatCompletionSettings);
   let failSave = true;
@@ -70,9 +70,39 @@ test('保存独立API不动聊天配置或原生密钥，只在设置写入成�
   failSave = false;
   await host.saveSettings(settings, fakeKey);
   assert.equal(host.hasCustomApiKey!(connection), true);
-  assert.equal(JSON.stringify(context.extensionSettings).includes(fakeKey), false);
+  assert.equal(host.getSettings().customApiKeys?.[connection.baseUrl], fakeKey);
   assert.deepEqual(context.chatCompletionSettings, before);
   assert.equal(host.describeConnection(connection), '独立 API（reader-model）');
+  const anotherContext = structuredClone(context);
+  const payloads: Record<string, unknown>[] = [];
+  const anotherHost = createReaderHost({ getContext: () => anotherContext, store: { load: async () => null, save: async () => {} }, fetcher: async (route, init) => {
+    payloads.push(JSON.parse(String(init?.body)));
+    return Response.json(String(route).endsWith('/status') ? { data: [{ id: 'reader-model' }] } : result);
+  } });
+  assert.equal(anotherHost.hasCustomApiKey!(connection), true);
+  assert.deepEqual(await anotherHost.listModels(connection), ['reader-model']);
+  assert.equal(await anotherHost.generate(messages, anotherHost.getSettings(), new AbortController().signal), '虚构解读');
+  assert.ok(payloads.every((payload) => payload.proxy_password === fakeKey));
+  assert.equal(JSON.stringify(payloads[1]!.messages).includes(fakeKey), false);
+  failSave = true;
+  await assert.rejects(host.saveSettings(settings, 'fictional-replacement'), /设置和输入仍保留/u);
+  assert.equal(host.getSettings().customApiKeys?.[connection.baseUrl], fakeKey);
+});
+
+test('只改提示词或参数保留Key，空白保留同地址Key，更新及切换地址分别保存', async () => {
+  const context = { extensionSettings: {} as Record<string, unknown> };
+  const host = createReaderHost({ getContext: () => context, store: { load: async () => null, save: async () => {} }, saveNativeSettings: async () => {} });
+  await host.saveSettings({ ...defaultReaderSettings(), connection }, fakeKey);
+  await host.saveSettings({ ...defaultReaderSettings(), analysisPrompt: '修改后的提示词' });
+  assert.equal(host.getSettings().customApiKeys?.[connection.baseUrl], fakeKey);
+  await host.saveSettings({ ...defaultReaderSettings(), connection }, '');
+  assert.equal(host.getSettings().customApiKeys?.[connection.baseUrl], fakeKey);
+  const other = { ...connection, baseUrl: 'https://other.example.test/v1' };
+  await host.saveSettings({ ...defaultReaderSettings(), connection: other });
+  assert.equal(host.hasCustomApiKey!(other), false);
+  await host.saveSettings({ ...defaultReaderSettings(), connection: other }, 'fictional-other-key');
+  await host.saveSettings({ ...defaultReaderSettings(), connection }, 'fictional-updated-key');
+  assert.deepEqual(host.getSettings().customApiKeys, { [connection.baseUrl]: 'fictional-updated-key', [other.baseUrl]: 'fictional-other-key' });
 });
 
 test('独立请求经酒馆后端发出，只发送自己的地址Key模型和原样消息，不继承聊天连接', async () => {
@@ -107,14 +137,14 @@ test('独立接口错误保留HTTP原因并隐藏回显Key，不回退到当前�
 
 test('分块任务固定独立连接和采样值，中途换Key时停止，不混用连接', async () => {
   const payloads: Record<string, unknown>[] = [];
-  const client = createCustomConnectionClient({ getHeaders: () => ({}), fetcher: async (_route, init) => { payloads.push(JSON.parse(String(init?.body))); return Response.json(result); } });
+  let savedKey = fakeKey;
+  const client = createCustomConnectionClient({ getHeaders: () => ({}), getSavedApiKey: () => savedKey, fetcher: async (_route, init) => { payloads.push(JSON.parse(String(init?.body))); return Response.json(result); } });
   const settings = { ...defaultReaderSettings(), connection };
   const signal = new AbortController().signal;
-  client.rememberApiKey(connection, fakeKey);
   await client.generate(messages, settings, signal, { temperature: 0.2 });
   await client.generate(messages, settings, signal, { temperature: 1.5 });
   assert.equal(payloads[1]!.temperature, 0.2);
-  client.rememberApiKey(connection, 'fictional-replacement');
+  savedKey = 'fictional-replacement';
   await assert.rejects(client.generate(messages, settings, signal, {}), /发生变化/u);
   assert.equal(payloads.length, 2);
 });
@@ -127,11 +157,11 @@ test('取消独立拉取即结束等待，即使测试fetch忽略signal也不挂
   await assert.rejects(pending, { name: 'AbortError' });
 });
 
-test('刷新后独立Key缺失明确要求补填，追问前阻止请求；无密钥接口可明确选择', async () => {
+test('尚未配置Key时提示保存一次即可，无密钥接口可明确选择', async () => {
   let calls = 0;
   const client = createCustomConnectionClient({ getHeaders: () => ({}), fetcher: async () => { calls += 1; return Response.json(result); } });
   const settings = { ...defaultReaderSettings(), connection };
-  await assert.rejects(client.generate(messages, settings, new AbortController().signal, {}), /刷新或在另一台设备.*重填/u);
+  await assert.rejects(client.generate(messages, settings, new AbortController().signal, {}), /保存一次后.*同一酒馆用户/u);
   assert.equal(calls, 0);
   await client.generate(messages, { ...settings, connection: { ...connection, noApiKey: true } }, new AbortController().signal, {});
   assert.equal(calls, 1);

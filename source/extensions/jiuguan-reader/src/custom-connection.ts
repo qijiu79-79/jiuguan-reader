@@ -1,19 +1,19 @@
 import type { ReaderConnection, ReaderMessage, ReaderSettings } from './types.js';
 import { providerErrorMessage, readCompletionResponse } from './completion-stream.js';
 
-/** Keys stay in this page's memory, never in extension settings or browser storage. */
+/** Read saved keys from the current Tavern user's settings, not per-device storage. */
 export function createCustomConnectionClient(dependencies: {
   fetcher?: typeof fetch;
   getHeaders: () => HeadersInit;
+  getSavedApiKey?: (url: string) => string | undefined;
 }) {
-  const keys = new Map<string, string>();
   const sessions = new WeakMap<AbortSignal, {
     url: string; key: string; model: string; generation: Record<string, unknown>;
   }>();
   const fetcher = dependencies.fetcher ?? globalThis.fetch.bind(globalThis);
 
   function keyFor(url: string, draftKey?: string): string {
-    const key = draftKey?.trim() || keys.get(url) || '';
+    const key = draftKey?.trim() || dependencies.getSavedApiKey?.(url) || '';
     if (/[\r\n]/u.test(key)) throw new Error('API Key 不能包含换行，请检查粘贴的内容。');
     return key;
   }
@@ -56,12 +56,7 @@ export function createCustomConnectionClient(dependencies: {
 
   return {
     hasApiKey(connection: ReaderConnection): boolean {
-      try { return keys.has(resolveCustomApiBaseUrl(connection.baseUrl ?? '')); } catch { return false; }
-    },
-
-    rememberApiKey(connection: ReaderConnection, draftKey?: string): void {
-      const url = resolveCustomApiBaseUrl(connection.baseUrl ?? '');
-      if (draftKey?.trim()) keys.set(url, keyFor(url, draftKey));
+      try { return Boolean(keyFor(resolveCustomApiBaseUrl(connection.baseUrl ?? ''))); } catch { return false; }
     },
 
     async listModels(connection: ReaderConnection, signal: AbortSignal, draftKey?: string): Promise<string[]> {
@@ -82,7 +77,7 @@ export function createCustomConnectionClient(dependencies: {
       const model = settings.connection.model?.trim() || '';
       if (!model) throw new Error('请先为独立 API 选择或填写模型 ID。');
       const key = settings.connection.noApiKey ? '' : keyFor(url);
-      if (!key && !isLocalApi(url) && !settings.connection.noApiKey) throw new Error('独立 API 的 Key 当前未填写（刷新或在另一台设备打开后需要重填）。请打开读卡设置补填 Key 并保存；本次没有发送角色资料或改用聊天 API。无密钥接口可在设置中明确勾选“接口无需 Key”。');
+      if (!key && !isLocalApi(url) && !settings.connection.noApiKey) throw new Error('请在读卡设置填写 API Key 并保存；保存一次后，刷新和手机登录同一酒馆用户都可继续使用。无需密钥的接口可勾选“接口无需 Key”。');
       let session = sessions.get(signal);
       if (session && (session.url !== url || session.key !== key || session.model !== model)) {
         throw new Error('独立 API 的地址、Key 或模型在读卡过程中发生变化；已停止，未混用连接。');
