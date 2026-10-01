@@ -39,9 +39,10 @@ export function normalizeReaderSettings(value: unknown): ReaderSettings {
     systemPrompt: typeof input.systemPrompt === 'string' ? input.systemPrompt : defaults.systemPrompt,
     analysisPrompt: typeof input.analysisPrompt === 'string' ? input.analysisPrompt : defaults.analysisPrompt,
     connection: {
-      mode: connection.mode === 'profile' ? 'profile' : 'current',
+      mode: connection.mode === 'custom' ? 'custom' : connection.mode === 'profile' ? 'profile' : 'current',
       profileId: typeof connection.profileId === 'string' ? connection.profileId : '',
       ...(model ? { model } : {}),
+      ...(typeof connection.baseUrl === 'string' ? { baseUrl: connection.baseUrl.trim() } : {}),
     },
     generation: {
       inherit: generation.inherit !== false,

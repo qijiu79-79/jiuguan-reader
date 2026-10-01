@@ -33,6 +33,11 @@ interface ReaderSettingsViewHarness extends ReaderViewHarness {
   analysisInput: FakeElement;
   connectionMode: FakeElement;
   profileInput: FakeElement;
+  customConnectionFields: FakeElement;
+  apiUrlInput: FakeElement;
+  apiKeyInput: FakeElement;
+  apiKeyNote: FakeElement;
+  apiKeyToggle: FakeElement;
   modelSelect: FakeElement;
   modelInput: FakeElement;
   modelSummary: FakeElement;
@@ -55,6 +60,8 @@ interface ReaderSettingsViewHarness extends ReaderViewHarness {
   fetchModels(): Promise<void>;
   connectionChanged(): void;
   refreshModelSummary(): void;
+  modelSelectionChanged(): void;
+  modelInputChanged(): void;
   updateGenerationVisibility(): void;
   markSettingsDirty(message?: string): void;
   saveSettings(save: FakeElement): Promise<void>;
@@ -286,8 +293,8 @@ function createFakeReaderSettingsHost(
   initialSettings = defaultReaderSettings(),
   options: {
     profiles?: Array<{ id: string; name: string }>;
-    listModels?: (connection: ReaderConnection, signal?: AbortSignal) => Promise<string[]>;
-    beforeSave?: (settings: ReaderSettings) => Promise<void>;
+    listModels?: (connection: ReaderConnection, signal?: AbortSignal, draftApiKey?: string) => Promise<string[]>;
+    beforeSave?: (settings: ReaderSettings, draftApiKey?: string) => Promise<void>;
   } = {},
 ): FakeReaderSettingsHost {
   let settings = initialSettings;
@@ -298,9 +305,9 @@ function createFakeReaderSettingsHost(
   ];
   const host = {
     getSettings: () => settings,
-    async saveSettings(next: ReaderSettings) {
+    async saveSettings(next: ReaderSettings, draftApiKey?: string) {
       saveCalls += 1;
-      await options.beforeSave?.(next);
+      await options.beforeSave?.(next, draftApiKey);
       settings = next;
     },
     getProfiles: () => profiles,
@@ -336,6 +343,11 @@ function createReaderSettingsView(
   const analysisInput = new FakeElement('textarea', spies);
   const connectionMode = new FakeElement('select', spies);
   const profileInput = new FakeElement('select', spies);
+  const customConnectionFields = new FakeElement('div', spies);
+  const apiUrlInput = new FakeElement('input', spies);
+  const apiKeyInput = new FakeElement('input', spies);
+  const apiKeyNote = new FakeElement('p', spies);
+  const apiKeyToggle = new FakeElement('button', spies);
   const modelSelect = new FakeElement('select', spies);
   const modelInput = new FakeElement('input', spies);
   const modelSummary = new FakeElement('div', spies);
@@ -389,6 +401,11 @@ function createReaderSettingsView(
     analysisInput,
     connectionMode,
     profileInput,
+    customConnectionFields,
+    apiUrlInput,
+    apiKeyInput,
+    apiKeyNote,
+    apiKeyToggle,
     modelSelect,
     modelInput,
     modelSummary,
@@ -427,8 +444,8 @@ function createReaderSettingsView(
 
   connectionMode.addEventListener('change', () => view.connectionChanged());
   profileInput.addEventListener('change', () => view.connectionChanged());
-  modelSelect.addEventListener('change', () => view.refreshModelSummary());
-  modelInput.addEventListener('input', () => view.refreshModelSummary());
+  modelSelect.addEventListener('change', () => view.modelSelectionChanged());
+  modelInput.addEventListener('input', () => view.modelInputChanged());
   inheritGenerationInput.addEventListener('change', () => view.updateGenerationVisibility());
   form.addEventListener('input', () => view.markSettingsDirty());
   form.addEventListener('change', () => view.markSettingsDirty());
@@ -438,6 +455,82 @@ function createReaderSettingsView(
 
 const extensionIndexSource = readFileSync(new URL('../extensions/jiuguan-reader/src/index.ts', import.meta.url), 'utf8');
 const viewSource = readFileSync(new URL('../extensions/jiuguan-reader/src/ui.ts', import.meta.url), 'utf8');
+
+test('独立API有直接填写地址Key和模型的入口，旧连接档案保留为不同选项', async () => {
+  assert.match(viewSource, /option\('custom', '独立 API：自己填写'\)/u);
+  assert.match(viewSource, /option\('profile', '酒馆已保存的连接配置'\)/u);
+  assert.match(viewSource, /jgr-api-url/u);
+  assert.match(viewSource, /jgr-api-key/u);
+  assert.match(viewSource, /Key 只在当前页面保留/u);
+  const spies = emptySpies();
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies);
+    assert.equal(view.customConnectionFields.hidden, true);
+    view.connectionMode.value = 'custom';
+    view.connectionMode.dispatch('change');
+    assert.equal(view.customConnectionFields.hidden, false);
+    assert.equal(view.profileInput.closest('label')!.hidden, true);
+    assert.equal(view.modelInput.closest('label')!.hidden, false, '独立模式不必另选手动模式才出现模型输入');
+  });
+});
+
+test('独立拉取用未保存表单地址和Key，不要求模型，不保存也不清空草稿', async () => {
+  const spies = emptySpies();
+  let sentConnection: ReaderConnection | undefined;
+  let sentKey: string | undefined;
+  const settingsHost = createFakeReaderSettingsHost(defaultReaderSettings(), {
+    listModels(connection, _signal, draftApiKey) { sentConnection = connection; sentKey = draftApiKey; return Promise.resolve(['independent-model']); },
+  });
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    view.connectionMode.value = 'custom';
+    view.connectionMode.dispatch('change');
+    view.apiUrlInput.value = 'https://fictional.example.test/v3';
+    view.apiKeyInput.value = 'fictional-draft-key';
+    view.systemInput.value = '未保存的提示词';
+    await view.fetchModels();
+    assert.deepEqual(sentConnection, { mode: 'custom', profileId: '', baseUrl: 'https://fictional.example.test/v3' });
+    assert.equal(sentKey, 'fictional-draft-key');
+    assert.equal(settingsHost.getSaveCalls(), 0);
+    assert.equal(view.apiKeyInput.value, 'fictional-draft-key');
+    assert.equal(view.systemInput.value, '未保存的提示词');
+    assert.equal(view.modelSelect.value, 'manual', '不自动选第一个模型');
+    view.modelSelect.value = 'model:independent-model';
+    view.modelSelect.dispatch('change');
+    assert.equal(view.modelInput.value, 'independent-model');
+  });
+});
+
+test('独立API手填模型可直接保存，Key单独传递不进入设置；保存失败保留输入', async () => {
+  const spies = emptySpies();
+  let sentKey: string | undefined;
+  let fail = true;
+  const settingsHost = createFakeReaderSettingsHost(defaultReaderSettings(), {
+    async beforeSave(_settings, key) { sentKey = key; if (fail) throw new Error('虚构保存失败'); },
+  });
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    view.connectionMode.value = 'custom';
+    view.connectionMode.dispatch('change');
+    view.apiUrlInput.value = 'https://fictional.example.test/v1';
+    view.apiKeyInput.value = 'fictional-independent-key';
+    view.modelInput.value = 'a-long-provider/full-model-id';
+    view.modelInput.dispatch('input');
+    await view.saveSettings(new FakeElement('button', spies));
+    assert.equal(view.apiKeyInput.value, 'fictional-independent-key');
+    assert.equal(view.settingsDirty, true);
+    fail = false;
+    await view.saveSettings(new FakeElement('button', spies));
+    assert.equal(sentKey, 'fictional-independent-key');
+    assert.deepEqual(settingsHost.getSavedSettings().connection, { mode: 'custom', profileId: '', baseUrl: 'https://fictional.example.test/v1', model: 'a-long-provider/full-model-id' });
+    assert.equal(JSON.stringify(settingsHost.getSavedSettings()).includes('fictional-independent-key'), false);
+    assert.equal(view.apiKeyInput.value, '');
+    assert.equal(view.settingsDirty, false);
+    view.openSettings();
+    assert.equal(view.apiUrlInput.value, 'https://fictional.example.test/v1');
+    assert.equal(view.modelInput.value, 'a-long-provider/full-model-id');
+  });
+});
 
 test('模型列表不自动选首项，保存后重开恢复所选模型和生成参数', async () => {
   const spies = emptySpies();

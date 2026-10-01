@@ -26,9 +26,10 @@ export interface ReadingDocument {
 }
 
 export interface ReaderConnection {
-  mode: 'current' | 'profile';
+  mode: 'current' | 'custom' | 'profile';
   profileId: string;
   model?: string;
+  baseUrl?: string;
 }
 
 export interface ReaderGenerationSettings {
@@ -111,10 +112,11 @@ export interface ReadingStore {
 export interface ReaderHost {
   getMaterial(signal?: AbortSignal): Promise<ReadingMaterial>;
   getSettings(): ReaderSettings;
-  saveSettings(settings: ReaderSettings): Promise<void>;
+  saveSettings(settings: ReaderSettings, draftApiKey?: string): Promise<void>;
+  hasCustomApiKey?(connection: ReaderConnection): boolean;
   getProfiles(): ConnectionProfile[];
   getConnectionInfo(connection: ReaderConnection): ReaderConnectionInfo;
-  listModels(connection: ReaderConnection, signal?: AbortSignal): Promise<string[]>;
+  listModels(connection: ReaderConnection, signal?: AbortSignal, draftApiKey?: string): Promise<string[]>;
   describeConnection(connection: ReaderConnection): string;
   generate(messages: ReaderMessage[], settings: ReaderSettings, signal: AbortSignal): Promise<string>;
   store: ReadingStore;

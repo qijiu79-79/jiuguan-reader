@@ -66,6 +66,7 @@
 .jgr-dialog textarea { resize: vertical; }
 .jgr-dialog select option { color: #f2f3f5 !important; background: #303137 !important; }
 .jgr-settings-form { display: flex; flex-direction: column; gap: 12px; }
+.jgr-custom-connection { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .jgr-field { display: flex; flex-direction: column; min-width: 0; gap: 7px; margin: 0; font-size: 14px; }
 .jgr-field > span { font-weight: 600; }
 .jgr-field > button { align-self: flex-start; }

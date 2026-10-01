@@ -1,6 +1,7 @@
 import { DEFAULT_ANALYSIS_PROMPT, DEFAULT_QUICK_QUESTIONS, normalizeReaderSettings } from './settings.js';
 import { renderReadingText } from './render.js';
 import { READER_EXTENSION_VERSION } from './updater.js';
+import { resolveCustomApiBaseUrl } from './custom-connection.js';
 import type { ReaderController, ReaderState } from './controller.js';
 import type { ExtensionUpdater } from './updater.js';
 import type { ReaderConnection, ReaderHost, ReaderSettings, ReaderSource } from './types.js';
@@ -31,6 +32,11 @@ export class ReaderView {
   private readonly analysisInput = element('textarea', 'jgr-prompt-input');
   private readonly connectionMode = element('select');
   private readonly profileInput = element('select');
+  private readonly customConnectionFields = element('div', 'jgr-custom-connection');
+  private readonly apiUrlInput = element('input');
+  private readonly apiKeyInput = element('input');
+  private readonly apiKeyNote = element('p', 'jgr-muted');
+  private readonly apiKeyToggle = button('显示 Key');
   private readonly modelSelect = element('select');
   private readonly modelInput = element('input');
   private readonly modelSummary = element('div', 'jgr-connection-summary');
@@ -173,13 +179,42 @@ export class ReaderView {
     header.append(element('strong', 'jgr-title', '读卡设置'), closeButton(this.settingsPanel));
     const form = element('form', 'jgr-scroll jgr-settings-form');
     this.connectionMode.id = 'jgr-connection-mode';
-    this.connectionMode.append(option('current', '跟随酒馆当前 API'), option('profile', '独立连接：酒馆已保存的配置'));
+    this.connectionMode.append(option('current', '跟随酒馆当前 API'), option('custom', '独立 API：自己填写'), option('profile', '酒馆已保存的连接配置'));
     this.profileInput.id = 'jgr-connection-profile';
     this.connectionMode.addEventListener('change', () => this.connectionChanged());
     this.profileInput.addEventListener('change', () => this.connectionChanged());
     form.append(field('API 连接', this.connectionMode));
-    form.append(field('独立连接配置', this.profileInput));
-    form.append(element('p', 'jgr-muted', '独立连接请先在酒馆“连接配置”中保存，再在这里选用。读卡不会切换聊天连接，也不复制或保存 API Key。'));
+    form.append(field('酒馆连接配置', this.profileInput));
+    this.apiUrlInput.id = 'jgr-api-url';
+    this.apiUrlInput.type = 'text';
+    this.apiUrlInput.autocomplete = 'off';
+    this.apiUrlInput.placeholder = 'https://服务商地址/v1';
+    this.apiUrlInput.addEventListener('input', () => {
+      this.cancelModelRequest();
+      this.availableModels = [];
+      this.modelsStatus.hidden = true;
+      this.updateModelOptions();
+    });
+    this.apiKeyInput.id = 'jgr-api-key';
+    this.apiKeyInput.type = 'password';
+    this.apiKeyInput.autocomplete = 'off';
+    this.apiKeyInput.addEventListener('input', () => {
+      this.cancelModelRequest();
+      this.modelsStatus.hidden = true;
+    });
+    const keyLabel = field('API Key', this.apiKeyInput);
+    const keyToggle = this.apiKeyToggle;
+    keyToggle.id = 'jgr-toggle-key';
+    keyToggle.addEventListener('click', () => {
+      this.apiKeyInput.type = this.apiKeyInput.type === 'password' ? 'text' : 'password';
+      keyToggle.textContent = this.apiKeyInput.type === 'password' ? '显示 Key' : '隐藏 Key';
+    });
+    keyLabel.append(keyToggle);
+    this.customConnectionFields.append(field('API 地址（OpenAI 兼容）', this.apiUrlInput),
+      element('p', 'jgr-muted', '可填写 /v1 等完整前缀；只填域名时自动补 /v1。也可粘贴 /chat/completions 地址。'),
+      keyLabel, this.apiKeyNote,
+      element('p', 'jgr-muted', '地址和模型可保存；Key 只在当前页面保留，刷新或退出后需重填。不写入浏览器存储，不改聊天用的 Key。无需先保存或填写模型就能拉取列表。'));
+    form.append(this.customConnectionFields);
     this.modelSummary.setAttribute('role', 'status');
     this.modelSummary.setAttribute('aria-live', 'polite');
     form.append(this.modelSummary);
@@ -188,8 +223,8 @@ export class ReaderView {
     this.modelInput.type = 'text';
     this.modelInput.placeholder = '例如：服务商给出的完整模型 ID';
     this.modelInput.autocomplete = 'off';
-    this.modelSelect.addEventListener('change', () => { this.refreshModelSummary(); });
-    this.modelInput.addEventListener('input', () => this.refreshModelSummary());
+    this.modelSelect.addEventListener('change', () => this.modelSelectionChanged());
+    this.modelInput.addEventListener('input', () => this.modelInputChanged());
     form.append(field('用于读卡的模型', this.modelSelect), field('手动填写模型 ID', this.modelInput));
     this.fetchModelsButton.id = 'jgr-fetch-models';
     this.fetchModelsButton.addEventListener('click', () => { void this.fetchModels(); });
@@ -414,11 +449,15 @@ export class ReaderView {
     this.systemInput.value = settings.systemPrompt;
     this.analysisInput.value = settings.analysisPrompt;
     this.connectionMode.value = settings.connection.mode;
+    this.apiUrlInput.value = settings.connection.baseUrl ?? '';
+    this.apiKeyInput.value = '';
+    this.apiKeyInput.type = 'password';
+    this.apiKeyToggle.textContent = '显示 Key';
     this.updateProfiles();
     this.profileInput.value = settings.connection.profileId;
     this.modelInput.value = settings.connection.model ?? '';
     this.availableModels = [];
-    this.updateModelOptions(settings.connection.model ? `model:${settings.connection.model}` : '');
+    this.updateModelOptions(settings.connection.model ? `model:${settings.connection.model}` : settings.connection.mode === 'custom' ? 'manual' : '');
     this.inheritGenerationInput.checked = settings.generation.inherit;
     this.temperatureInput.value = String(settings.generation.temperature);
     this.topPInput.value = String(settings.generation.topP);
@@ -446,11 +485,16 @@ export class ReaderView {
 
   private updateProfileVisibility(): void {
     this.profileInput.closest('label')!.hidden = this.connectionMode.value !== 'profile';
+    this.customConnectionFields.hidden = this.connectionMode.value !== 'custom';
+    const remembered = this.host.hasCustomApiKey?.(this.formConnection(false)) ?? false;
+    this.apiKeyInput.placeholder = remembered ? '本页已填写，留空继续使用；刷新后需重填' : '填写 API Key（无密钥的本地接口可留空）';
+    this.apiKeyNote.textContent = remembered ? '本页已记住这个地址的 Key；不会把它用于另一个地址。' : '新地址不会借用酒馆聊天或其他地址的 Key。';
   }
 
   private formConnection(includeModel = true): ReaderConnection {
-    const connection: ReaderConnection = { mode: this.connectionMode.value === 'profile' ? 'profile' : 'current', profileId: this.profileInput.value };
-    const model = this.modelSelect.value === 'manual' ? this.modelInput.value.trim()
+    const connection: ReaderConnection = { mode: this.connectionMode.value === 'custom' ? 'custom' : this.connectionMode.value === 'profile' ? 'profile' : 'current', profileId: this.profileInput.value,
+      ...(this.connectionMode.value === 'custom' ? { baseUrl: this.apiUrlInput.value.trim() } : {}) };
+    const model = connection.mode === 'custom' ? this.modelInput.value.trim() : this.modelSelect.value === 'manual' ? this.modelInput.value.trim()
       : this.modelSelect.value.startsWith('model:') ? this.modelSelect.value.slice(6) : '';
     if (includeModel && model) connection.model = model;
     return connection;
@@ -458,7 +502,7 @@ export class ReaderView {
 
   private updateModelOptions(selection = this.modelSelect.value): void {
     const info = this.host.getConnectionInfo(this.formConnection(false));
-    this.modelSelect.replaceChildren(option('', `跟随连接模型：${info.model || '尚未设置'}`));
+    this.modelSelect.replaceChildren(option('', this.connectionMode.value === 'custom' ? '从拉取列表选择，或直接在下方填写' : `跟随连接模型：${info.model || '尚未设置'}`));
     const selectedModel = selection.startsWith('model:') ? selection.slice(6) : '';
     const models = [...new Set([...(selectedModel ? [selectedModel] : []), ...this.availableModels])];
     for (const model of models) this.modelSelect.append(option(`model:${model}`, model));
@@ -468,9 +512,20 @@ export class ReaderView {
   }
 
   private refreshModelSummary(): void {
-    this.modelInput.closest('label')!.hidden = this.modelSelect.value !== 'manual';
+    this.updateProfileVisibility();
+    this.modelInput.closest('label')!.hidden = this.connectionMode.value !== 'custom' && this.modelSelect.value !== 'manual';
     const info = this.host.getConnectionInfo(this.formConnection());
     this.modelSummary.textContent = `连接：${info.label}${info.source ? ` · ${info.source}` : ''}\n读卡模型：${info.model || '尚未设置，请选择或手动填写'}`;
+  }
+
+  private modelSelectionChanged(): void {
+    if (this.connectionMode.value === 'custom' && this.modelSelect.value.startsWith('model:')) this.modelInput.value = this.modelSelect.value.slice(6);
+    this.refreshModelSummary();
+  }
+
+  private modelInputChanged(): void {
+    if (this.connectionMode.value === 'custom') this.modelSelect.value = 'manual';
+    this.refreshModelSummary();
   }
 
   private updateGenerationVisibility(): void {
@@ -483,7 +538,7 @@ export class ReaderView {
     this.availableModels = [];
     this.modelsStatus.hidden = true;
     this.updateProfileVisibility();
-    this.updateModelOptions('');
+    this.updateModelOptions(this.connectionMode.value === 'custom' ? this.modelInput.value.trim() ? `model:${this.modelInput.value.trim()}` : 'manual' : '');
   }
 
   private cancelModelRequest(): void {
@@ -508,7 +563,7 @@ export class ReaderView {
     this.modelsStatus.textContent = '正在从所选连接获取模型列表，没有发送角色卡资料。';
     this.modelsStatus.hidden = false;
     try {
-      const models = await this.host.listModels(connection, abort.signal);
+      const models = await this.host.listModels(connection, abort.signal, connection.mode === 'custom' ? this.apiKeyInput.value : undefined);
       if (this.modelRequest !== abort || abort.signal.aborted) return;
       this.availableModels = models;
       this.updateModelOptions();
@@ -533,6 +588,16 @@ export class ReaderView {
     if (this.modelSelect.value === 'manual' && !this.modelInput.value.trim()) {
       this.settingsStatus.textContent = '请填写模型 ID，或选择“跟随连接模型”。';
       return;
+    }
+    if (this.connectionMode.value === 'custom') {
+      try { resolveCustomApiBaseUrl(this.apiUrlInput.value); } catch (error) {
+        this.settingsStatus.textContent = error instanceof Error ? error.message : '请检查 API 地址。';
+        return;
+      }
+      if (!this.modelInput.value.trim()) {
+        this.settingsStatus.textContent = '请为独立 API 选择或直接填写模型 ID。';
+        return;
+      }
     }
     const savedGeneration = this.host.getSettings().generation;
     const raw = {
@@ -562,9 +627,13 @@ export class ReaderView {
     const normalizedSettings = normalizeReaderSettings(raw);
     save.disabled = true;
     try {
-      await this.host.saveSettings(normalizedSettings);
+      await this.host.saveSettings(normalizedSettings, raw.connection.mode === 'custom' ? this.apiKeyInput.value : undefined);
       if (this.settingsEditVersion === editVersionAtSave) {
         this.settingsDirty = false;
+        if (raw.connection.mode === 'custom') {
+          this.apiKeyInput.value = '';
+          this.updateProfileVisibility();
+        }
         if (normalizedSettings.generation.inherit) {
           this.temperatureInput.value = String(normalizedSettings.generation.temperature);
           this.topPInput.value = String(normalizedSettings.generation.topP);

@@ -1,4 +1,5 @@
 import { normalizeReaderSettings } from './settings.js';
+import { createCustomConnectionClient, resolveCustomApiBaseUrl } from './custom-connection.js';
 import { createReaderStore, type ReaderStoreDependencies } from './storage.js';
 import type {
   ConnectionProfile,
@@ -189,6 +190,10 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
     getHeaders: () => getContext().getRequestHeaders?.() ?? {},
   });
   const generationSessions = new WeakMap<AbortSignal, GenerationSession>();
+  const customClient = createCustomConnectionClient({
+    fetcher: dependencies.fetcher,
+    getHeaders: () => getContext().getRequestHeaders?.() ?? {},
+  });
 
   return {
     async getMaterial(signal) {
@@ -274,17 +279,23 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       return normalizeReaderSettings(value);
     },
 
-    async saveSettings(settings) {
+    async saveSettings(settings, draftApiKey) {
       const context = getContext();
       const extensionSettings = context.extensionSettings;
       if (!extensionSettings) throw new Error('酒馆设置尚未加载；没有保存读卡设置。');
 
       const normalized = normalizeReaderSettings(settings);
+      if (normalized.connection.mode === 'custom') {
+        normalized.connection.baseUrl = resolveCustomApiBaseUrl(normalized.connection.baseUrl ?? '');
+        if (!normalized.connection.model) throw new Error('请先为独立 API 选择或填写模型 ID。');
+        if (/[\r\n]/u.test(draftApiKey ?? '')) throw new Error('API Key 不能包含换行，请检查粘贴的内容。');
+      }
       const previous = extensionSettings[EXTENSION_SETTINGS_KEY];
       extensionSettings[EXTENSION_SETTINGS_KEY] = normalized;
       try {
         const save = dependencies.saveNativeSettings ?? saveNativeSettings;
         await save(context);
+        if (normalized.connection.mode === 'custom') customClient.rememberApiKey(normalized.connection, draftApiKey);
       } catch {
         if (extensionSettings[EXTENSION_SETTINGS_KEY] === normalized) {
           if (previous === undefined) delete extensionSettings[EXTENSION_SETTINGS_KEY];
@@ -298,17 +309,22 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       return getSupportedProfiles(getContext());
     },
 
+    hasCustomApiKey(connection) {
+      return customClient.hasApiKey(connection);
+    },
+
     getConnectionInfo(connection) {
       return getConnectionInfo(getContext(), connection);
     },
 
-    async listModels(connection, signal) {
+    async listModels(connection, signal, draftApiKey) {
       throwIfAborted(signal);
       const abort = new AbortController();
       const forwardAbort = (): void => abort.abort();
       signal?.addEventListener('abort', forwardAbort, { once: true });
       const timer = setTimeout(() => abort.abort(), MODEL_LIST_TIMEOUT_MS);
       try {
+        if (connection.mode === 'custom') return await raceWithAbort(customClient.listModels(connection, abort.signal, draftApiKey), abort.signal);
         const sessions = new WeakMap<AbortSignal, GenerationSession>();
         const context = getContext();
         const session = await getGenerationSession(sessions, context, connection, abort.signal, dependencies, true);
@@ -351,6 +367,7 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
         if (signal?.aborted) throw createAbortError();
         if (abort.signal.aborted) throw new ReaderHostSafeError('拉取模型超时，请重试或手动填写模型 ID。');
         if (error instanceof ReaderHostSafeError) throw error;
+        if (connection.mode === 'custom' && error instanceof Error) throw error;
         throw new ReaderHostSafeError('无法拉取模型列表，请检查酒馆连接或手动填写模型 ID。');
       } finally {
         clearTimeout(timer);
@@ -368,6 +385,12 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       validateRawMessages(messages);
       const context = getContext();
       const rawMessages = messages.map((message) => ({ role: message.role, content: message.content }));
+      if (settings.connection.mode === 'custom') {
+        const generation = buildGenerationOverride(settings, currentSamplingDefaults(context));
+        const result = await raceWithAbort(customClient.generate(rawMessages, settings, signal, generation), signal);
+        throwIfAborted(signal);
+        return extractGeneratedText(result);
+      }
       const useSystemPrompt = rawMessages.some((message) => message.role === 'system');
       const session = await getGenerationSession(generationSessions, context, settings.connection, signal, dependencies);
       const generation = buildGenerationOverride(settings, session.mode === 'profile' ? session.samplingDefaults : {});
@@ -757,6 +780,9 @@ function buildProfileOverride(profile: NativeProfileSnapshot, useSystemPrompt: b
 }
 
 function getConnectionInfo(context: NativeContext, connection: ReaderConnection) {
+  if (connection.mode === 'custom') {
+    return { label: '独立 API', source: 'OpenAI 兼容接口', model: connection.model?.trim() || '' };
+  }
   if (connection.mode === 'profile') {
     const profile = findChatCompletionProfile(context, connection.profileId);
     const label = getSupportedProfiles(context).find((item) => item.id === connection.profileId)?.name ?? '酒馆指定连接';

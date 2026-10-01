@@ -10,6 +10,7 @@ import path from 'node:path';
 const MOCK_MODEL = 'reader-qa-mock';
 const MOCK_ALTERNATE_MODEL = 'reader-qa-alternate-with-a-long-model-identifier-2026-10-01';
 const MOCK_SERVICE = 'jiuguan-reader-qa-mock';
+const MOCK_INDEPENDENT_KEY = 'reader-qa-independent-only-fake';
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const GREETING_MARKER = 'GREETING_MUST_NOT_BE_SENT';
 const UNRELATED_WORLD_MARKER = 'UNRELATED_WORLD_MUST_NOT_BE_SENT';
@@ -29,6 +30,8 @@ type ControlMode = 'normal' | 'length' | 'failure' | 'delay';
 interface SafeStats {
   requestCount: number;
   modelListRequests: number;
+  lastModelListUsedIndependentKey: boolean | null;
+  lastGenerationUsedIndependentKey: boolean | null;
   greetingMarkerSeen: boolean;
   unrelatedWorldMarkerSeen: boolean;
   authorNotesMarkerSeen: boolean;
@@ -95,6 +98,8 @@ interface ImportCharacterResult {
 const stats: SafeStats = {
   requestCount: 0,
   modelListRequests: 0,
+  lastModelListUsedIndependentKey: null,
+  lastGenerationUsedIndependentKey: null,
   greetingMarkerSeen: false,
   unrelatedWorldMarkerSeen: false,
   authorNotesMarkerSeen: false,
@@ -239,6 +244,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
   if (request.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) {
     stats.modelListRequests += 1;
+    stats.lastModelListUsedIndependentKey = request.headers.authorization === `Bearer ${MOCK_INDEPENDENT_KEY}`;
     sendJson(response, 200, {
       object: 'list',
       data: [MOCK_MODEL, MOCK_ALTERNATE_MODEL].map((id) => ({ id, object: 'model', created: 1_791_000_000, owned_by: 'local-qa' })),
@@ -257,6 +263,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       mockModelName: MOCK_MODEL,
       requestCount: stats.requestCount,
       modelListRequests: stats.modelListRequests,
+      lastModelListUsedIndependentKey: stats.lastModelListUsedIndependentKey,
+      lastGenerationUsedIndependentKey: stats.lastGenerationUsedIndependentKey,
       greetingMarkerSeen: stats.greetingMarkerSeen,
       unrelatedWorldMarkerSeen: stats.unrelatedWorldMarkerSeen,
       authorNotesMarkerSeen: stats.authorNotesMarkerSeen,
@@ -345,6 +353,8 @@ async function handleControl(request: IncomingMessage, response: ServerResponse)
 function resetStats(): void {
   stats.requestCount = 0;
   stats.modelListRequests = 0;
+  stats.lastModelListUsedIndependentKey = null;
+  stats.lastGenerationUsedIndependentKey = null;
   stats.greetingMarkerSeen = false;
   stats.unrelatedWorldMarkerSeen = false;
   stats.authorNotesMarkerSeen = false;
@@ -367,6 +377,7 @@ function resetStats(): void {
 
 async function handleCompletion(request: IncomingMessage, response: ServerResponse): Promise<void> {
   stats.requestCount += 1;
+  stats.lastGenerationUsedIndependentKey = request.headers.authorization === `Bearer ${MOCK_INDEPENDENT_KEY}`;
   let rawBody: string;
   try {
     rawBody = await readBody(request);
