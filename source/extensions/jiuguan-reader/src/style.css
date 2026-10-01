@@ -67,6 +67,8 @@
 .jgr-dialog select option { color: #f2f3f5 !important; background: #303137 !important; }
 .jgr-settings-form { display: flex; flex-direction: column; gap: 12px; }
 .jgr-custom-connection { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.jgr-stream-preview { border: 1px solid #688b93; border-radius: 8px; padding: 12px; margin: 10px 0; }
+.jgr-stream-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .jgr-field { display: flex; flex-direction: column; min-width: 0; gap: 7px; margin: 0; font-size: 14px; }
 .jgr-field > span { font-weight: 600; }
 .jgr-field > button { align-self: flex-start; }

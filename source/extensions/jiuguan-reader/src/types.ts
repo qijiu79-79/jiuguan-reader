@@ -30,6 +30,7 @@ export interface ReaderConnection {
   profileId: string;
   model?: string;
   baseUrl?: string;
+  noApiKey?: boolean;
 }
 
 export interface ReaderGenerationSettings {
@@ -53,6 +54,7 @@ export interface ReaderSettings {
   generation: ReaderGenerationSettings;
   contextChars: number;
   maxOutputTokens: number;
+  stream: boolean;
   quickQuestions: string[];
 }
 
@@ -71,6 +73,7 @@ export interface ReadingProgress {
   completed: number;
   total: number;
   sourceCount: number;
+  preview?: string;
 }
 
 export interface ReadingResult {
@@ -118,7 +121,7 @@ export interface ReaderHost {
   getConnectionInfo(connection: ReaderConnection): ReaderConnectionInfo;
   listModels(connection: ReaderConnection, signal?: AbortSignal, draftApiKey?: string): Promise<string[]>;
   describeConnection(connection: ReaderConnection): string;
-  generate(messages: ReaderMessage[], settings: ReaderSettings, signal: AbortSignal): Promise<string>;
+  generate(messages: ReaderMessage[], settings: ReaderSettings, signal: AbortSignal, onText?: (text: string) => void): Promise<string>;
   store: ReadingStore;
 }
 
@@ -126,4 +129,5 @@ export type GenerateReading = (
   messages: ReaderMessage[],
   settings: ReaderSettings,
   signal: AbortSignal,
+  onText?: (text: string) => void,
 ) => Promise<string>;

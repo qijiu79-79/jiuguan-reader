@@ -13,6 +13,9 @@ export class ReaderView {
   private readonly title = element('strong', 'jgr-title', '酒馆读卡');
   private readonly status = element('div', 'jgr-status');
   private readonly error = element('div', 'jgr-error');
+  private readonly fixConnectionButton = button('打开 API 设置补填 / 检查');
+  private readonly streamPreview = element('section', 'jgr-stream-preview');
+  private readonly streamText = element('div', 'jgr-stream-text');
   private readonly scope = element('details', 'jgr-scope');
   private readonly scopeSummary = element('summary', '', '读取范围');
   private readonly scopeBody = element('div', 'jgr-scope-body');
@@ -35,6 +38,7 @@ export class ReaderView {
   private readonly customConnectionFields = element('div', 'jgr-custom-connection');
   private readonly apiUrlInput = element('input');
   private readonly apiKeyInput = element('input');
+  private readonly noApiKeyInput = element('input');
   private readonly apiKeyNote = element('p', 'jgr-muted');
   private readonly apiKeyToggle = button('显示 Key');
   private readonly modelSelect = element('select');
@@ -43,6 +47,7 @@ export class ReaderView {
   private readonly modelsStatus = element('p', 'jgr-status');
   private readonly fetchModelsButton = button('拉取模型列表');
   private readonly inheritGenerationInput = element('input');
+  private readonly streamInput = element('input');
   private readonly temperatureInput = element('input');
   private readonly topPInput = element('input');
   private readonly frequencyInput = element('input');
@@ -147,6 +152,9 @@ export class ReaderView {
     this.status.setAttribute('role', 'status');
     this.status.setAttribute('aria-live', 'polite');
     this.error.setAttribute('role', 'alert');
+    this.fixConnectionButton.addEventListener('click', () => this.openSettings());
+    this.streamPreview.append(element('p', 'jgr-muted', '正在生成 · 未完成预览，尚未保存'), this.streamText);
+    this.streamPreview.hidden = true;
     const actions = element('div', 'jgr-actions');
     this.readButton.addEventListener('click', () => { this.view = 'analysis'; void this.controller.read(); });
     this.cancelButton.addEventListener('click', () => this.controller.cancel());
@@ -170,7 +178,7 @@ export class ReaderView {
     askRow.append(this.questionInput, this.askButton);
     const questionArea = element('div', 'jgr-question-area');
     questionArea.append(this.questions, askRow, element('div', 'jgr-muted', '解读和回答自动保存，不会写入聊天。⌘ / Ctrl + Enter 提问。'));
-    scroll.append(intro, this.scope, actions, this.status, this.error, this.metadata, this.tabs, this.analysisBody, this.answersBody, questionArea);
+    scroll.append(intro, this.scope, actions, this.status, this.error, this.fixConnectionButton, this.streamPreview, this.metadata, this.tabs, this.analysisBody, this.answersBody, questionArea);
     this.panel.append(header, scroll);
   }
 
@@ -203,6 +211,11 @@ export class ReaderView {
       this.modelsStatus.hidden = true;
     });
     const keyLabel = field('API Key', this.apiKeyInput);
+    this.noApiKeyInput.id = 'jgr-no-api-key';
+    this.noApiKeyInput.type = 'checkbox';
+    this.noApiKeyInput.addEventListener('change', () => { this.cancelModelRequest(); this.updateProfileVisibility(); });
+    const noKeyLabel = element('label', 'jgr-checkbox');
+    noKeyLabel.append(this.noApiKeyInput, element('span', '', '接口无需 Key（仅在接口明确支持时勾选）'));
     const keyToggle = this.apiKeyToggle;
     keyToggle.id = 'jgr-toggle-key';
     keyToggle.addEventListener('click', () => {
@@ -212,9 +225,14 @@ export class ReaderView {
     keyLabel.append(keyToggle);
     this.customConnectionFields.append(field('API 地址（OpenAI 兼容）', this.apiUrlInput),
       element('p', 'jgr-muted', '可填写 /v1 等完整前缀；只填域名时自动补 /v1。也可粘贴 /chat/completions 地址。'),
-      keyLabel, this.apiKeyNote,
+      keyLabel, noKeyLabel, this.apiKeyNote,
       element('p', 'jgr-muted', '地址和模型可保存；Key 只在当前页面保留，刷新或退出后需重填。不写入浏览器存储，不改聊天用的 Key。无需先保存或填写模型就能拉取列表。'));
     form.append(this.customConnectionFields);
+    this.streamInput.id = 'jgr-stream';
+    this.streamInput.type = 'checkbox';
+    const streamLabel = element('label', 'jgr-checkbox');
+    streamLabel.append(this.streamInput, element('span', '', '流式生成（边生成边显示）'));
+    form.append(streamLabel, element('p', 'jgr-muted', '默认开启。长卡先完整读取各段，最终介绍才显示流式预览；停止或失败不覆盖旧结果。接口不支持流式时可关闭，不自动重复调用。'));
     this.modelSummary.setAttribute('role', 'status');
     this.modelSummary.setAttribute('aria-live', 'polite');
     form.append(this.modelSummary);
@@ -325,6 +343,9 @@ export class ReaderView {
       : state.status;
     this.error.textContent = state.error;
     this.error.hidden = !state.error;
+    this.fixConnectionButton.hidden = !state.error || this.host.getSettings().connection.mode !== 'custom';
+    this.streamPreview.hidden = !state.busy || !progress?.preview;
+    this.streamText.textContent = progress?.preview ?? '';
     this.metadata.textContent = state.record
       ? `${state.unsaved ? '尚未保存' : '已保存'} · ${new Date(state.record.readAt).toLocaleString()} · ${state.record.model}`
       : '';
@@ -378,7 +399,7 @@ export class ReaderView {
     this.analysisBody.replaceChildren();
     this.answersBody.replaceChildren();
     if (!record) {
-      this.analysisBody.append(element('div', 'jgr-empty', '生成一份中文说明，了解这张卡的人物经历、关系和玩法。读过后，下次直接查看。'));
+      this.analysisBody.append(element('div', 'jgr-empty', '生成 500 字以内的设定介绍，快速了解角色经历和与玩家的关系。有疑问再追问；读过后下次直接查看。'));
       return;
     }
     this.analysisBody.append(renderReadingText(record.analysis, record.sources, (source) => this.showSource(source)));
@@ -453,6 +474,8 @@ export class ReaderView {
     this.apiKeyInput.value = '';
     this.apiKeyInput.type = 'password';
     this.apiKeyToggle.textContent = '显示 Key';
+    this.streamInput.checked = settings.stream;
+    this.noApiKeyInput.checked = settings.connection.noApiKey === true;
     this.updateProfiles();
     this.profileInput.value = settings.connection.profileId;
     this.modelInput.value = settings.connection.model ?? '';
@@ -486,6 +509,7 @@ export class ReaderView {
   private updateProfileVisibility(): void {
     this.profileInput.closest('label')!.hidden = this.connectionMode.value !== 'profile';
     this.customConnectionFields.hidden = this.connectionMode.value !== 'custom';
+    this.apiKeyInput.disabled = this.noApiKeyInput.checked;
     const remembered = this.host.hasCustomApiKey?.(this.formConnection(false)) ?? false;
     this.apiKeyInput.placeholder = remembered ? '本页已填写，留空继续使用；刷新后需重填' : '填写 API Key（无密钥的本地接口可留空）';
     this.apiKeyNote.textContent = remembered ? '本页已记住这个地址的 Key；不会把它用于另一个地址。' : '新地址不会借用酒馆聊天或其他地址的 Key。';
@@ -494,6 +518,7 @@ export class ReaderView {
   private formConnection(includeModel = true): ReaderConnection {
     const connection: ReaderConnection = { mode: this.connectionMode.value === 'custom' ? 'custom' : this.connectionMode.value === 'profile' ? 'profile' : 'current', profileId: this.profileInput.value,
       ...(this.connectionMode.value === 'custom' ? { baseUrl: this.apiUrlInput.value.trim() } : {}) };
+    if (connection.mode === 'custom' && this.noApiKeyInput.checked) connection.noApiKey = true;
     const model = connection.mode === 'custom' ? this.modelInput.value.trim() : this.modelSelect.value === 'manual' ? this.modelInput.value.trim()
       : this.modelSelect.value.startsWith('model:') ? this.modelSelect.value.slice(6) : '';
     if (includeModel && model) connection.model = model;
@@ -613,6 +638,7 @@ export class ReaderView {
       },
       contextChars: Number(this.contextInput.value),
       maxOutputTokens: Number(this.outputInput.value),
+      stream: this.streamInput.checked,
       quickQuestions: this.shortcutsInput.value.split('\n'),
     };
     if (!Number.isSafeInteger(raw.contextChars) || raw.contextChars <= 0 || !Number.isSafeInteger(raw.maxOutputTokens) || raw.maxOutputTokens <= 0) {

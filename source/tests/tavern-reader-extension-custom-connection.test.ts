@@ -83,7 +83,7 @@ test('独立请求经酒馆后端发出，只发送自己的地址Key模型和�
     payloads.push(JSON.parse(String(init?.body)));
     return Response.json(result);
   } });
-  const settings = { ...defaultReaderSettings(), connection, generation: { inherit: false, temperature: 0.35, topP: 0.9, frequencyPenalty: 0.1, presencePenalty: -0.2 }, maxOutputTokens: 2048 };
+  const settings = { ...defaultReaderSettings(), stream: false, connection, generation: { inherit: false, temperature: 0.35, topP: 0.9, frequencyPenalty: 0.1, presencePenalty: -0.2 }, maxOutputTokens: 2048 };
   await host.saveSettings(settings, fakeKey);
   assert.equal(await host.generate(messages, host.getSettings(), new AbortController().signal), '虚构解读');
   assert.deepEqual(payloads[0], {
@@ -125,4 +125,33 @@ test('取消独立拉取即结束等待，即使测试fetch忽略signal也不挂
   const pending = host.listModels(connection, abort.signal, fakeKey);
   abort.abort();
   await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('刷新后独立Key缺失明确要求补填，追问前阻止请求；无密钥接口可明确选择', async () => {
+  let calls = 0;
+  const client = createCustomConnectionClient({ getHeaders: () => ({}), fetcher: async () => { calls += 1; return Response.json(result); } });
+  const settings = { ...defaultReaderSettings(), connection };
+  await assert.rejects(client.generate(messages, settings, new AbortController().signal, {}), /刷新或在另一台设备.*重填/u);
+  assert.equal(calls, 0);
+  await client.generate(messages, { ...settings, connection: { ...connection, noApiKey: true } }, new AbortController().signal, {});
+  assert.equal(calls, 1);
+});
+
+test('401认证失败显示补填指引，429显示额度原因，响应回显Key仍脱敏', async () => {
+  for (const [status, body, expected] of [
+    [401, { error: { message: `Unauthorized ${fakeKey}` } }, /HTTP 401.*重填 Key/u],
+    [429, { detail: 'rate limit' }, /HTTP 429.*额度/u],
+  ] as const) {
+    const client = createCustomConnectionClient({ getHeaders: () => ({}), fetcher: async () => Response.json(body, { status }) });
+    await assert.rejects(client.listModels(connection, new AbortController().signal, fakeKey), (error: Error) => {
+      assert.match(error.message, expected);
+      assert.equal(error.message.includes(fakeKey), false);
+      return true;
+    });
+  }
+});
+
+test('酒馆把上游401转成400 Unauthorized时仍提示补填Key', async () => {
+  const client = createCustomConnectionClient({ getHeaders: () => ({}), fetcher: async () => Response.json({ error: { message: 'Synthetic failure.' } }, { status: 400, statusText: 'Unauthorized' }) });
+  await assert.rejects(client.listModels(connection, new AbortController().signal, fakeKey), /HTTP 400.*重填 Key/u);
 });

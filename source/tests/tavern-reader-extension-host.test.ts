@@ -32,7 +32,7 @@ function createCharacterContext() {
     characterId: 0,
     groupId: '',
     characters: [shallow],
-    extensionSettings: { disabledExtensions: [] as string[] },
+    extensionSettings: { disabledExtensions: [] as string[], 'jiuguan-reader': { stream: false } },
     mainApi: 'openai',
     chatCompletionSettings: {
       chat_completion_source: 'openai',

@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DEFAULT_ANALYSIS_PROMPT, defaultReaderSettings, normalizeReaderSettings } from '../extensions/jiuguan-reader/src/settings.js';
+import { DEFAULT_ANALYSIS_PROMPT, LEGACY_ANALYSIS_PROMPT, defaultReaderSettings, normalizeReaderSettings } from '../extensions/jiuguan-reader/src/settings.js';
 
-test('默认提示重点包括人物经历与世界书状态，并明确不读开场白和作者注释', () => {
-  assert.match(DEFAULT_ANALYSIS_PROMPT, /重要经历/u);
-  assert.match(DEFAULT_ANALYSIS_PROMPT, /怎样影响/u);
+test('默认介绍500字以内，只讲设定经历和玩家关系，不推荐玩法；默认流式', () => {
+  assert.match(DEFAULT_ANALYSIS_PROMPT, /500 字以内/u);
+  assert.match(DEFAULT_ANALYSIS_PROMPT, /关键经历/u);
+  assert.match(DEFAULT_ANALYSIS_PROMPT, /玩家和人物的关系/u);
+  assert.match(DEFAULT_ANALYSIS_PROMPT, /不要分析主要矛盾/u);
   assert.match(DEFAULT_ANALYSIS_PROMPT, /不解读开场白/u);
   assert.match(DEFAULT_ANALYSIS_PROMPT, /作者注释、标签、版本/u);
   assert.match(DEFAULT_ANALYSIS_PROMPT, /禁用/u);
   assert.equal(defaultReaderSettings().connection.mode, 'current');
+  assert.equal(defaultReaderSettings().stream, true);
+});
+
+test('只迁移旧版原封不动的默认提示词，不覆盖用户改过的提示；流式开关可保存', () => {
+  assert.equal(normalizeReaderSettings({ analysisPrompt: LEGACY_ANALYSIS_PROMPT }).analysisPrompt, DEFAULT_ANALYSIS_PROMPT);
+  assert.equal(normalizeReaderSettings({ analysisPrompt: `${LEGACY_ANALYSIS_PROMPT}\n我的补充` }).analysisPrompt, `${LEGACY_ANALYSIS_PROMPT}\n我的补充`);
+  assert.equal(normalizeReaderSettings({ stream: false }).stream, false);
+  assert.equal(normalizeReaderSettings({}).stream, true);
 });
 
 test('用户提示词包括空白和换行均保留原样，空系统提示词也不补写', () => {

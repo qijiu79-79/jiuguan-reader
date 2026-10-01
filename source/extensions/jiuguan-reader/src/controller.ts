@@ -186,7 +186,7 @@ export class ReaderController {
       });
       abort.signal.throwIfAborted();
       if (version !== this.loadVersion) return;
-      this.patch({ record, unsaved: true, status: '生成完成，正在保存…' });
+      this.patch({ record, progress: null, unsaved: true, status: '生成完成，正在保存…' });
       try {
         await this.host.store.save(record);
         if (version === this.loadVersion) this.patch({ unsaved: false, status: '已自动保存，下次打开这张卡可以直接查看。' });
@@ -196,8 +196,8 @@ export class ReaderController {
     } catch (error) {
       if (version === this.loadVersion) {
         this.patch(abort.signal.aborted
-          ? { status: '已停止；之前保存的解读和回答没有改动。', error: '' }
-          : { status: '生成失败；之前保存的内容没有改动。', error: errorMessage(error) });
+          ? { progress: null, status: '已停止；之前保存的解读和回答没有改动。', error: '' }
+          : { progress: null, status: '生成失败；之前保存的内容没有改动。', error: errorMessage(error) });
       }
     } finally {
       if (version === this.loadVersion) this.patch({ busy: false, progress: null });

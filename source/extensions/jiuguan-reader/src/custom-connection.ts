@@ -1,4 +1,5 @@
 import type { ReaderConnection, ReaderMessage, ReaderSettings } from './types.js';
+import { providerErrorMessage, readCompletionResponse } from './completion-stream.js';
 
 /** Keys stay in this page's memory, never in extension settings or browser storage. */
 export function createCustomConnectionClient(dependencies: {
@@ -17,7 +18,7 @@ export function createCustomConnectionClient(dependencies: {
     return key;
   }
 
-  async function request(route: 'status' | 'generate', payload: Record<string, unknown>, key: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+  async function request(route: 'status' | 'generate', payload: Record<string, unknown>, key: string, signal: AbortSignal, onText?: (text: string) => void): Promise<Record<string, unknown>> {
     try {
       const headers = new Headers(dependencies.getHeaders());
       headers.set('Content-Type', 'application/json');
@@ -25,12 +26,25 @@ export function createCustomConnectionClient(dependencies: {
         method: 'POST', headers, body: JSON.stringify(payload), signal, cache: 'no-cache',
       });
       if (signal.aborted) throw abortError();
+      if (response.ok && payload.stream === true) {
+        const data = await readCompletionResponse(response, signal, onText);
+        if (data.error) throw new Error(providerErrorMessage(data) || '独立 API 返回了错误，未采用结果。');
+        return data;
+      }
       let data: Record<string, unknown> | null = null;
-      try { data = asRecord(await response.json()); } catch { /* Report safe status, not arbitrary HTML. */ }
+      let raw = '';
+      try {
+        raw = await response.text();
+        data = asRecord(JSON.parse(raw));
+      } catch { /* Plain-text errors are allowed, arbitrary HTML is not. */ }
       if (signal.aborted) throw abortError();
       if (!response.ok || !data || data.error) {
-        const details = safeError(data?.error ?? data?.message, key);
-        throw new Error(`独立 API ${route === 'status' ? '拉取模型' : '请求'}失败${response.ok ? '' : `（HTTP ${response.status}）`}${details ? `：${details}` : '，请检查地址和 Key。'}`);
+        const details = safeError(providerErrorMessage(data) || (!/[<>]/u.test(raw) ? raw : ''), key);
+        // SillyTavern maps upstream 401 to HTTP 400 but retains Unauthorized.
+        const hint = /401|403|unauthorized|forbidden|invalid.{0,15}(key|credential)/iu.test(`${response.status} ${response.statusText} ${details}`)
+          ? ' 请打开读卡设置检查或重填 Key，再保存；本次未改用聊天 API。'
+          : response.status === 429 || /quota|rate.limit/iu.test(details) ? ' 请检查接口额度或稍后再试。' : ' 请检查地址、模型和接口支持的参数。';
+        throw new Error(`独立 API ${route === 'status' ? '拉取模型' : '请求'}失败${response.ok ? '' : `（HTTP ${response.status}）`}${details ? `：${details}` : '：接口没有提供错误详情。'}${hint}`);
       }
       return data;
     } catch (error) {
@@ -52,7 +66,7 @@ export function createCustomConnectionClient(dependencies: {
 
     async listModels(connection: ReaderConnection, signal: AbortSignal, draftKey?: string): Promise<string[]> {
       const url = resolveCustomApiBaseUrl(connection.baseUrl ?? '');
-      const key = keyFor(url, draftKey);
+      const key = connection.noApiKey ? '' : keyFor(url, draftKey);
       const data = await request('status', customFields(url, key), key, signal);
       const models = Array.isArray(data.data)
         ? [...new Set(data.data.map((item) => asRecord(item)?.id)
@@ -63,11 +77,12 @@ export function createCustomConnectionClient(dependencies: {
       return models;
     },
 
-    async generate(messages: ReaderMessage[], settings: ReaderSettings, signal: AbortSignal, generation: Record<string, unknown>): Promise<Record<string, unknown>> {
+    async generate(messages: ReaderMessage[], settings: ReaderSettings, signal: AbortSignal, generation: Record<string, unknown>, onText?: (text: string) => void): Promise<Record<string, unknown>> {
       const url = resolveCustomApiBaseUrl(settings.connection.baseUrl ?? '');
       const model = settings.connection.model?.trim() || '';
       if (!model) throw new Error('请先为独立 API 选择或填写模型 ID。');
-      const key = keyFor(url);
+      const key = settings.connection.noApiKey ? '' : keyFor(url);
+      if (!key && !isLocalApi(url) && !settings.connection.noApiKey) throw new Error('独立 API 的 Key 当前未填写（刷新或在另一台设备打开后需要重填）。请打开读卡设置补填 Key 并保存；本次没有发送角色资料或改用聊天 API。无密钥接口可在设置中明确勾选“接口无需 Key”。');
       let session = sessions.get(signal);
       if (session && (session.url !== url || session.key !== key || session.model !== model)) {
         throw new Error('独立 API 的地址、Key 或模型在读卡过程中发生变化；已停止，未混用连接。');
@@ -79,10 +94,10 @@ export function createCustomConnectionClient(dependencies: {
       return request('generate', {
         ...customFields(session.url, session.key), ...session.generation,
         model: session.model, messages: messages.map(({ role, content }) => ({ role, content })),
-        stream: false, max_tokens: settings.maxOutputTokens,
+        stream: settings.stream, max_tokens: settings.maxOutputTokens,
         use_sysprompt: messages.some(({ role }) => role === 'system'),
         custom_prompt_post_processing: '',
-      }, session.key, signal);
+      }, session.key, signal, onText);
     },
   };
 }
@@ -116,7 +131,16 @@ function safeError(value: unknown, key: string): string {
   if (key) text = text.split(key).join('[密钥已隐藏]');
   return text.replace(/https?:\/\/[^\s"'<>]+/giu, '[地址已隐藏]')
     .replace(/\bBearer\s+[^\s,;)}\]]+/giu, 'Bearer [密钥已隐藏]')
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b/giu, '[密钥已隐藏]')
+    .replace(/\b(api[_-]?key|access[_-]?token|token|secret|password|authorization|credential)(\s*["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;)}\]]+)/giu, '$1$2[已隐藏]')
     .replace(/[\r\n\t ]+/gu, ' ').slice(0, 500);
+}
+
+function isLocalApi(value: string): boolean {
+  const hostname = new URL(value).hostname;
+  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')
+    || hostname === '[::1]' || /^127\./u.test(hostname) || /^10\./u.test(hostname)
+    || /^192\.168\./u.test(hostname) || /^172\.(?:1[6-9]|2\d|3[01])\./u.test(hostname);
 }
 
 function abortError(): Error {

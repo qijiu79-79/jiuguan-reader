@@ -85,6 +85,28 @@ test('快捷和自由追问保存为问答，不覆盖概览', async () => {
   assert.equal(fixture.controller.getState().unsaved, false);
 });
 
+test('流式部分回答只是预览，失败或停止时不保存，也不覆盖旧解读', async () => {
+  for (const cancel of [false, true]) {
+    const fixture = setup();
+    const controller = new ReaderController(fixture.host, { buildDocument: async () => documentFor() });
+    const previews: string[] = [];
+    controller.subscribe((state) => { if (state.progress?.preview) previews.push(state.progress.preview); });
+    fixture.host.generate = async (_messages, _settings, signal, onText) => {
+      onText?.('尚未完成的部分回答');
+      if (cancel) { controller.cancel(); signal.throwIfAborted(); }
+      throw new Error('模拟流中断');
+    };
+    await controller.loadCurrent();
+    await controller.question('人物关系？');
+    assert.deepEqual(previews, ['尚未完成的部分回答']);
+    assert.equal(fixture.counts().saveCount, 0);
+    assert.equal(controller.getState().record?.analysis, '旧解读 [S1]');
+    assert.equal(controller.getState().record?.answers.length, 0);
+    assert.equal(controller.getState().progress, null);
+    assert.equal(controller.getState().busy, false);
+  }
+});
+
 test('重新解读失败或取消保留旧结果，不写入存储', async () => {
   const fixture = setup();
   await fixture.controller.loadCurrent();

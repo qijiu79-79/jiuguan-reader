@@ -1,5 +1,6 @@
 import { normalizeReaderSettings } from './settings.js';
 import { createCustomConnectionClient, resolveCustomApiBaseUrl } from './custom-connection.js';
+import { providerErrorMessage, readCompletionResponse } from './completion-stream.js';
 import { createReaderStore, type ReaderStoreDependencies } from './storage.js';
 import type {
   ConnectionProfile,
@@ -167,7 +168,7 @@ type GenerationSession =
     identity: NativeCurrentConnectionSnapshot;
     modelOverride?: string;
   }
-  | { mode: 'profile'; profileId: string; profile: NativeProfileSnapshot; proxyEndpoint?: string; modelOverride?: string; samplingDefaults: Record<string, unknown> };
+  | { mode: 'profile'; profileId: string; profile: NativeProfileSnapshot; proxyEndpoint?: string; proxyPassword?: string; modelOverride?: string; samplingDefaults: Record<string, unknown> };
 
 interface WorldInfoState {
   world_info?: unknown;
@@ -178,6 +179,7 @@ export interface ReaderHostDependencies {
   getWorldInfoSettings?: () => Promise<WorldInfoState> | WorldInfoState;
   saveNativeSettings?: (context: NativeContext) => Promise<void>;
   getProfileProxyEndpoint?: (proxyName: string) => string | undefined | Promise<string | undefined>;
+  getProfileProxyPassword?: (proxyName: string) => string | Promise<string>;
   store?: ReaderHost['store'];
   fetcher?: ReaderStoreDependencies['fetcher'];
 }
@@ -380,14 +382,14 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       return info.model ? `${info.label}（${info.model}）` : info.label;
     },
 
-    async generate(messages, settings, signal) {
+    async generate(messages, settings, signal, onText) {
       throwIfAborted(signal);
       validateRawMessages(messages);
       const context = getContext();
       const rawMessages = messages.map((message) => ({ role: message.role, content: message.content }));
       if (settings.connection.mode === 'custom') {
         const generation = buildGenerationOverride(settings, currentSamplingDefaults(context));
-        const result = await raceWithAbort(customClient.generate(rawMessages, settings, signal, generation), signal);
+        const result = await raceWithAbort(customClient.generate(rawMessages, settings, signal, generation, onText), signal);
         throwIfAborted(signal);
         return extractGeneratedText(result);
       }
@@ -396,6 +398,38 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       const generation = buildGenerationOverride(settings, session.mode === 'profile' ? session.samplingDefaults : {});
       throwIfAborted(signal);
       try {
+        if (settings.stream) {
+          let profilePassword = '';
+          if (session.mode === 'profile' && session.proxyEndpoint && session.profile.proxy) {
+            profilePassword = await readProfileProxyPassword(session.profile.proxy, session.proxyEndpoint, dependencies);
+            if (session.proxyPassword !== undefined && session.proxyPassword !== profilePassword) {
+              throw new ReaderHostSafeError('指定连接的代理 Key 在读卡过程中发生变化；已停止，未混用连接。');
+            }
+            session.proxyPassword = profilePassword;
+          }
+          const payload = session.mode === 'current' ? { ...session.requestDefaults }
+            : { ...buildProfileOverride(session.profile, useSystemPrompt), reverse_proxy: session.proxyEndpoint ?? '', proxy_password: profilePassword };
+          if (session.mode === 'profile' && asStringArray(context.extensionSettings?.disabledExtensions).includes('connection-manager')) {
+            throw new ReaderHostSafeError('指定连接模式需要启用酒馆 Connection Manager；本次没有改用当前连接。');
+          }
+          const fetcher = dependencies.fetcher ?? globalThis.fetch.bind(globalThis);
+          const response = await raceWithAbort(fetcher('/api/backends/chat-completions/generate', {
+            method: 'POST', headers: { ...Object.fromEntries(new Headers(context.getRequestHeaders?.() ?? {})), 'Content-Type': 'application/json' },
+            signal, cache: 'no-cache', body: JSON.stringify({
+              ...payload, ...generation, stream: true, messages: rawMessages,
+              model: session.modelOverride ?? (session.mode === 'current' ? session.model : session.profile.model),
+              chat_completion_source: session.mode === 'current' ? session.source : session.profile.source,
+              max_tokens: settings.maxOutputTokens, use_sysprompt: useSystemPrompt, custom_prompt_post_processing: '',
+            }),
+          }), signal);
+          if (!response.ok) {
+            let details = '';
+            try { details = providerErrorMessage(await response.json()); } catch { /* Never echo arbitrary HTML. */ }
+            throw new Error(`HTTP ${response.status}${details ? `: ${details}` : ''}`);
+          }
+          const result = await raceWithAbort(readCompletionResponse(response, signal, onText), signal);
+          return extractGeneratedText(result);
+        }
         let request: Promise<unknown>;
         if (session.mode === 'profile') {
           const manager = context.ConnectionManagerRequestService;
@@ -447,7 +481,9 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
         if (signal.aborted || isAbortError(error)) throw createAbortError();
         if (error instanceof ReaderHostSafeError) throw error;
         const route = session.mode === 'profile' ? '酒馆指定连接' : '酒馆当前连接';
-        throw new Error(`${route}请求失败：${formatProviderError(error)}；本次没有切换到其他连接。`);
+        const key = session.mode === 'current' ? session.requestDefaults.proxy_password : session.proxyPassword;
+        const details = typeof key === 'string' && key ? formatProviderError(error).split(key).join('[密钥已隐藏]') : formatProviderError(error);
+        throw new Error(`${route}请求失败：${details}；本次没有切换到其他连接。`);
       }
     },
 
@@ -733,6 +769,17 @@ async function readProfileProxyEndpoint(
   } catch {
     return undefined;
   }
+}
+
+async function readProfileProxyPassword(proxyName: string, expectedUrl: string, dependencies: ReaderHostDependencies): Promise<string> {
+  if (dependencies.getProfileProxyPassword) return dependencies.getProfileProxyPassword(proxyName);
+  // Tests injecting only an endpoint never load real host configuration.
+  if (dependencies.getProfileProxyEndpoint) return '';
+  const modulePath = OPENAI_SCRIPT_MODULE_URL;
+  const module = await import(/* @vite-ignore */ modulePath) as unknown as { proxies?: unknown };
+  const proxy = Array.isArray(module.proxies) ? module.proxies.map(asRecord).find((item) => item?.name === proxyName) : null;
+  if (proxy?.url !== expectedUrl) throw new ReaderHostSafeError('指定代理地址已变化；没有发送资料。');
+  return typeof proxy.password === 'string' ? proxy.password : '';
 }
 
 function isChatCompletionProfile(context: NativeContext, profile: NativeConnectionProfile): boolean {

@@ -56,13 +56,15 @@ interface SafeStats {
     frequencyPenalty: number | null;
     presencePenalty: number | null;
     maxTokens: number | null;
+    stream: boolean;
+    briefPromptSeen: boolean;
   } | null;
 }
 
 interface MockControl {
   mode: ControlMode;
   delayMs: number;
-  failureStatus: 429 | 500 | 503;
+  failureStatus: 401 | 403 | 429 | 500 | 503;
 }
 
 interface MockOptions {
@@ -332,15 +334,15 @@ async function handleControl(request: IncomingMessage, response: ServerResponse)
   }
 
   const requestedStatus = payload.failureStatus === undefined ? 503 : Number(payload.failureStatus);
-  if (requestedStatus !== 429 && requestedStatus !== 500 && requestedStatus !== 503) {
-    sendJson(response, 400, { error: { message: 'failureStatus must be 429, 500, or 503.', type: 'invalid_request_error' } });
+  if (![401, 403, 429, 500, 503].includes(requestedStatus)) {
+    sendJson(response, 400, { error: { message: 'failureStatus must be 401, 403, 429, 500, or 503.', type: 'invalid_request_error' } });
     return;
   }
 
   if (payload.resetStats === true) resetStats();
   control.mode = mode;
   control.delayMs = mode === 'delay' ? requestedDelay : 0;
-  control.failureStatus = requestedStatus;
+  control.failureStatus = requestedStatus as MockControl['failureStatus'];
   sendJson(response, 200, {
     ok: true,
     mode: control.mode,
@@ -435,6 +437,8 @@ async function handleCompletion(request: IncomingMessage, response: ServerRespon
     temperature: safeNumber(body.temperature), topP: safeNumber(body.top_p),
     frequencyPenalty: safeNumber(body.frequency_penalty), presencePenalty: safeNumber(body.presence_penalty),
     maxTokens: safeNumber(body.max_tokens),
+    stream: body.stream === true,
+    briefPromptSeen: userText.includes('500 字以内'),
   };
 
   if (control.mode === 'failure') {
@@ -455,6 +459,18 @@ async function handleCompletion(request: IncomingMessage, response: ServerRespon
   const completion = truncated ? generated.slice(0, Math.min(generated.length, 96)) : generated;
   if (truncated) stats.lengthResponses += 1;
   else stats.stopResponses += 1;
+  if (body.stream === true) {
+    response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+    const chars = [...completion];
+    for (let index = 0; index < chars.length; index += 12) {
+      if (response.destroyed) return;
+      response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: chars.slice(index, index + 12).join('') }, finish_reason: null }] })}\n\n`);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    if (response.destroyed) return;
+    response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: truncated ? 'length' : 'stop' }] })}\n\ndata: [DONE]\n\n`);
+    return;
+  }
   sendJson(response, 200, {
     id: `chatcmpl-qa-${stats.requestCount}`,
     object: 'chat.completion',
@@ -519,6 +535,7 @@ function buildMockAnswer(userText: string): string {
     const fallback = availableRefs[0];
     lines.push(`本段已收到资料，但没有包含灯塔经历、关系或世界书规则；模拟器不补写未出现在本段的设定。${fallback ? ` ${fallback}` : ''}`);
   }
+  if (userText.includes('500 字以内')) return lines.slice(0, 5).join('\n\n');
   return lines.join('\n\n');
 }
 

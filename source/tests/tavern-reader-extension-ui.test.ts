@@ -36,6 +36,7 @@ interface ReaderSettingsViewHarness extends ReaderViewHarness {
   customConnectionFields: FakeElement;
   apiUrlInput: FakeElement;
   apiKeyInput: FakeElement;
+  noApiKeyInput: FakeElement;
   apiKeyNote: FakeElement;
   apiKeyToggle: FakeElement;
   modelSelect: FakeElement;
@@ -44,6 +45,7 @@ interface ReaderSettingsViewHarness extends ReaderViewHarness {
   modelsStatus: FakeElement;
   fetchModelsButton: FakeElement;
   inheritGenerationInput: FakeElement;
+  streamInput: FakeElement;
   temperatureInput: FakeElement;
   topPInput: FakeElement;
   frequencyInput: FakeElement;
@@ -346,6 +348,7 @@ function createReaderSettingsView(
   const customConnectionFields = new FakeElement('div', spies);
   const apiUrlInput = new FakeElement('input', spies);
   const apiKeyInput = new FakeElement('input', spies);
+  const noApiKeyInput = new FakeElement('input', spies);
   const apiKeyNote = new FakeElement('p', spies);
   const apiKeyToggle = new FakeElement('button', spies);
   const modelSelect = new FakeElement('select', spies);
@@ -404,6 +407,7 @@ function createReaderSettingsView(
     customConnectionFields,
     apiUrlInput,
     apiKeyInput,
+    noApiKeyInput,
     apiKeyNote,
     apiKeyToggle,
     modelSelect,
@@ -412,6 +416,7 @@ function createReaderSettingsView(
     modelsStatus,
     fetchModelsButton,
     inheritGenerationInput,
+    streamInput: new FakeElement('input', spies),
     temperatureInput,
     topPInput,
     frequencyInput,
@@ -471,6 +476,31 @@ test('独立API有直接填写地址Key和模型的入口，旧连接档案保�
     assert.equal(view.customConnectionFields.hidden, false);
     assert.equal(view.profileInput.closest('label')!.hidden, true);
     assert.equal(view.modelInput.closest('label')!.hidden, false, '独立模式不必另选手动模式才出现模型输入');
+  });
+});
+
+test('流式开关和明确无密钥选项能保存恢复，界面说明部分结果未完成未保存', async () => {
+  assert.match(viewSource, /流式生成（边生成边显示）/u);
+  assert.match(viewSource, /未完成预览，尚未保存/u);
+  assert.match(viewSource, /打开 API 设置补填/u);
+  const spies = emptySpies();
+  const settingsHost = createFakeReaderSettingsHost();
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    assert.equal(view.streamInput.checked, true);
+    view.streamInput.checked = false;
+    view.connectionMode.value = 'custom';
+    view.connectionMode.dispatch('change');
+    view.noApiKeyInput.checked = true;
+    view.apiUrlInput.value = 'https://no-key.example.test/v1';
+    view.modelInput.value = 'fake-public-model';
+    await view.saveSettings(new FakeElement('button', spies));
+    assert.equal(settingsHost.getSavedSettings().stream, false);
+    assert.equal(settingsHost.getSavedSettings().connection.noApiKey, true);
+    view.openSettings();
+    assert.equal(view.streamInput.checked, false);
+    assert.equal(view.noApiKeyInput.checked, true);
+    assert.equal(view.apiKeyInput.disabled, true);
   });
 });
 

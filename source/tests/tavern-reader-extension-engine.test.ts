@@ -11,7 +11,7 @@ import type {
   SavedReading,
 } from '../extensions/jiuguan-reader/src/types.js';
 
-test('analysis uses the exact configured system prompt and user prompt, then validates citations', async () => {
+test('小卡一次请求完成简短介绍，原样发送用户提示词并验证来源', async () => {
   const document = readingDocument([
     { id: '[S1]', label: '人物经历', text: 'Mina searched for her sister for years.' },
     { id: '[S2]', label: '世界书 · Old Promise', text: 'When Mina remembers the promise, she becomes quiet.' },
@@ -33,9 +33,9 @@ test('analysis uses the exact configured system prompt and user prompt, then val
   assert.equal(result.chunkNotes.length, 1);
   assert.match(result.chunkNotes[0], /人物经历有明确依据 \[S1\]/u);
   assert.match(result.chunkNotes[0], /\[无对应原文来源\]/u);
-  assert.match(result.text, /整体总结仍有依据 \[S1\]/u);
+  assert.match(result.text, /人物经历有明确依据 \[S1\]/u);
   assert.match(result.text, /\[无对应原文来源\]/u);
-  assert.ok(requests.length >= 2, 'one reading call and one final synthesis call are expected');
+  assert.equal(requests.length, 1, '小卡不再重复生成笔记和总结');
   for (const messages of requests) {
     const systems = messages.filter((message) => message.role === 'system');
     assert.equal(systems.length, 1);
@@ -135,7 +135,7 @@ test('an empty model result is an explicit error and a cancelled read stops befo
   const empty: GenerateReading = async () => { calls += 1; return ' \n '; };
   await assert.rejects(
     analyzeDocument(document, settings, empty, new AbortController().signal),
-    /第 1 个资料分块没有返回内容/u,
+    /没有返回设定介绍/u,
   );
   assert.equal(calls, 1);
 
@@ -186,7 +186,7 @@ test('缺失世界书与排除范围告知模型和汇总，不把缺失资料�
   const generate: GenerateReading = async (messages) => { calls.push(messages); return '只基于现有资料 [S1]。'; };
   await analyzeDocument(document, settingsFixture(), generate, new AbortController().signal);
   await askDocument(document, savedReading(document), '角色经历过什么？', settingsFixture(), generate, new AbortController().signal);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 2);
   for (const call of calls) {
     const user = call.find((message) => message.role === 'user')?.content ?? '';
     assert.match(user, /缺失测试书.*无法读取/u);
