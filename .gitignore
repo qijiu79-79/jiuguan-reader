@@ -1,0 +1,23 @@
+# Installable extension files are in the repository root.
+# Keep generated source dependencies/build output and local user data out of Git.
+node_modules/
+source/node_modules/
+source/dist/
+source/dist-extensions/
+source/dist-server/
+.env
+.env.*
+source/.env
+source/.env.*
+data/
+backups/
+source/data/
+source/backups/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+source/**/*.db
+source/**/*.db-*
+source/**/*.sqlite
+source/**/*.sqlite-*

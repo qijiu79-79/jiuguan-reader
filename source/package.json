@@ -1,0 +1,129 @@
+{
+  "name": "jiuguan-yika",
+  "version": "0.2.11",
+  "description": "本地角色卡读卡助手与选择性翻译工作台",
+  "author": "酒馆译卡 contributors; based on CardLoom Translate",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,green \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch server/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "build:electron": "node scripts/clean-electron.mjs && tsc -p tsconfig.electron.json",
+    "typecheck:reader-extension": "tsc -p tsconfig.reader-extension.json --noEmit",
+    "build:reader-extension": "npm run typecheck:reader-extension && vite build --config extensions/jiuguan-reader/vite.config.ts",
+    "package:reader-extension": "npm run build:reader-extension && node scripts/package-reader-extension.mjs",
+    "test:reader-extension": "tsx --test tests/tavern-reader-extension-*.test.ts",
+    "desktop:prepare": "npm run build && npm run build:electron",
+    "desktop:portable": "npm run desktop:prepare && electron-builder --win portable",
+    "desktop:installer": "npm run desktop:prepare && electron-builder --win nsis",
+    "desktop:all": "npm run desktop:prepare && electron-builder --win",
+    "desktop:mac": "npm run desktop:prepare && electron-builder --mac dir --arm64",
+    "test:tavern": "tsx --test tests/tavern-*.test.ts",
+    "start": "node dist-server/server/index.js",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "@eslint-community/regexpp": "^4.12.2",
+    "@fastify/multipart": "^10.1.0",
+    "@fastify/static": "^10.1.2",
+    "fastify": "^5.0.0",
+    "fflate": "^0.8.3",
+    "luaparse": "^0.3.1",
+    "lucide-react": "^0.468.0",
+    "msgpackr": "^2.1.0",
+    "png-chunk-text": "^1.0.0",
+    "png-chunks-encode": "^1.0.0",
+    "png-chunks-extract": "^1.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/luaparse": "^0.2.13",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.1.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.9",
+    "@fastify/ajv-compiler": {
+      "fast-uri": "3.1.5"
+    },
+    "ajv": {
+      "fast-uri": "3.1.5"
+    },
+    "fast-json-stringify": {
+      "fast-uri": "4.1.2"
+    },
+    "nanoid": "3.3.18"
+  },
+  "build": {
+    "appId": "com.jiuguan.yika",
+    "productName": "酒馆译卡",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*",
+      "dist-server/**/*",
+      "public/jiuguan-card-bridge.user.js",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "使用说明.md",
+      "!**/*.map",
+      "!tests/**",
+      "!docs/**",
+      "!docker/**"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "target": [{ "target": "dir", "arch": ["arm64"] }]
+    },
+    "win": {
+      "signExecutable": false,
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "CardLoom-Translate-Portable-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CardLoom Translate",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "CardLoom-Translate-Setup-${version}.${ext}"
+    }
+  }
+}

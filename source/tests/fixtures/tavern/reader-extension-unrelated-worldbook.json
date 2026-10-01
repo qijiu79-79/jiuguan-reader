@@ -1,0 +1,17 @@
+{
+  "name": "__QA_UNRELATED_WORLD__",
+  "entries": {
+    "991104": {
+      "uid": 991104,
+      "comment": "Unrelated setting marker",
+      "key": ["faraway kingdom"],
+      "keysecondary": [],
+      "content": "UNRELATED_WORLD_MUST_NOT_BE_SENT — this entry belongs to a separate fictional setting and is deliberately not linked to Mara.",
+      "constant": true,
+      "selective": false,
+      "disable": false,
+      "order": 100,
+      "position": 0
+    }
+  }
+}

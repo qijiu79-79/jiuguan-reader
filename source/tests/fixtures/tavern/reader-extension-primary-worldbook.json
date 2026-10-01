@@ -1,0 +1,29 @@
+{
+  "name": "__QA_PRIMARY_WORLD__",
+  "entries": {
+    "991101": {
+      "uid": 991101,
+      "comment": "Always-on lighthouse rule",
+      "key": ["Greyglass Lighthouse", "lighthouse lamp"],
+      "keysecondary": [],
+      "content": "The lighthouse lamp must stay lit after sunset. Mara tends it herself; this is a standing rule, not a rumor or a conditional event.",
+      "constant": true,
+      "selective": false,
+      "disable": false,
+      "order": 100,
+      "position": 0
+    },
+    "991102": {
+      "uid": 991102,
+      "comment": "Disabled ghost draft",
+      "key": ["ghost", "haunting"],
+      "keysecondary": [],
+      "content": "A discarded draft claims a lighthouse ghost carried Storm away. This entry is disabled and is not established canon.",
+      "constant": false,
+      "selective": false,
+      "disable": true,
+      "order": 200,
+      "position": 0
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "__QA_EXTRA_WORLD__",
+  "entries": {
+    "991103": {
+      "uid": 991103,
+      "comment": "Conditional storm-bell route",
+      "key": ["storm bell", "three rings"],
+      "keysecondary": ["outer reef"],
+      "content": "Only when the brass storm bell rings three times can the old rescue route across the outer reef be used, and then only for one night. This rule does not reveal what happened to Storm.",
+      "constant": false,
+      "selective": true,
+      "disable": false,
+      "order": 300,
+      "position": 0
+    }
+  }
+}
