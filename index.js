@@ -1729,7 +1729,7 @@ function zn(e, t, n, r) {
       e.append(document.createTextNode(s));
   }
 }
-const Vn = "0.1.1", Gn = {
+const Vn = "0.1.2", Gn = {
   version: Vn
 }, Xn = Gn.version;
 class k extends Error {
@@ -1866,9 +1866,9 @@ class Zn {
   }
   createUpdateControls() {
     const t = l("section", "jgr-update-controls");
-    t.append(l("strong", "", "插件更新")), t.append(l("p", "jgr-muted", `当前版本：${Xn}`)), t.append(l("p", "jgr-muted", "更新不会自动刷新。刷新前请保存酒馆聊天、扩展和其他页面中的未提交内容。"));
-    const n = l("div", "jgr-update-actions"), r = A("一键更新", "jgr-primary"), o = A("刷新应用更新", "jgr-primary");
-    o.hidden = !0, n.append(r, o);
+    t.append(l("p", "jgr-muted", `当前版本：${Xn}`)), t.append(l("p", "jgr-muted", "更新直接在这里下载，不另开弹窗。刷新前请保存酒馆其他未提交的输入。"));
+    const n = l("div", "jgr-update-actions"), r = A("一键更新", "jgr-primary"), o = A("刷新页面", "jgr-primary");
+    o.title = "重新载入整个酒馆页面，应用已下载的更新；请先保存其他输入。", o.hidden = !0, n.append(r, o);
     const s = l("p", "jgr-update-status");
     s.setAttribute("role", "status"), s.setAttribute("aria-live", "polite"), s.hidden = !0;
     const i = l("p", "jgr-update-warning");
@@ -1921,7 +1921,7 @@ class Zn {
       a.type = "number", a.min = "1", a.step = "1";
     this.contextInput.id = "jgr-context-chars", this.outputInput.id = "jgr-output-tokens", this.shortcutsInput.id = "jgr-shortcuts", this.shortcutsInput.rows = 4, s.append(O("单次请求文字预算（字符，非精确 token）", this.contextInput), O("单次最大输出 token", this.outputInput), O("快捷问题（每行一个，可自由修改）", this.shortcutsInput)), s.append(l("p", "jgr-muted", "长卡与大世界书会完整分段读取，可能产生多次请求。不自动截断资料或提示词。"));
     const i = A("保存设置", "jgr-primary");
-    i.type = "submit", i.id = "jgr-save-settings", n.append(s, this.settingsStatus, i, this.createUpdateControls()), n.addEventListener("input", () => {
+    i.type = "submit", i.id = "jgr-save-settings", n.append(s, this.settingsStatus, i), n.addEventListener("input", () => {
       this.settingsDirty = !0, this.settingsStatus.textContent = "有未保存的修改；关闭设置后输入仍保留。";
     }), n.addEventListener("change", () => {
       this.settingsDirty = !0;
@@ -2057,7 +2057,7 @@ class Zn {
       return;
     }
     if (r === "updated") {
-      t.textContent = "更新已下载，请使用“刷新应用更新”按钮完成应用。", t.hidden = !1;
+      t.textContent = "更新已下载，请点击这里的“刷新页面”按钮生效。", t.hidden = !1;
       return;
     }
     t.hidden = !0, this.updateRequestPending = !0, this.renderUpdateControls();
@@ -2080,7 +2080,7 @@ class Zn {
       t.textContent = "请先成功下载插件更新，再刷新应用。", t.hidden = !1;
       return;
     }
-    window.confirm("更新已下载。刷新会重新载入整个酒馆页面；请先保存聊天草稿、酒馆设置和其他扩展中的输入。确认现在刷新吗？") && window.location.reload();
+    window.location.reload();
   }
   getUpdateBlockReason() {
     if (this.updateRequestPending) return "更新操作仍在完成，请稍候。";
@@ -2168,9 +2168,9 @@ async function tr() {
       const b = document.createElement("summary");
       b.textContent = "酒馆读卡";
       const v = document.createElement("p");
-      v.className = "jgr-muted", v.textContent = "在角色卡头像旁点“读卡”。这里管理连接、提示词、快捷问题和插件更新。";
+      v.className = "jgr-muted", v.textContent = "在角色卡头像旁点“读卡”。连接、提示词与快捷问题可在下面的设置中修改。";
       const E = document.createElement("button");
-      E.type = "button", E.className = "jgr-button", E.textContent = "打开读卡设置", E.addEventListener("click", () => r.openSettings()), f.append(b, v, E, r.createUpdateControls()), y.append(f);
+      E.type = "button", E.className = "jgr-button", E.textContent = "打开读卡设置", E.addEventListener("click", () => r.openSettings()), f.append(b, r.createUpdateControls(), v, E), y.append(f);
     }
   };
   a();

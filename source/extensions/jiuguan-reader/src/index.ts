@@ -94,13 +94,13 @@ async function initialize(): Promise<void> {
       summary.textContent = '酒馆读卡';
       const hint = document.createElement('p');
       hint.className = 'jgr-muted';
-      hint.textContent = '在角色卡头像旁点“读卡”。这里管理连接、提示词、快捷问题和插件更新。';
+      hint.textContent = '在角色卡头像旁点“读卡”。连接、提示词与快捷问题可在下面的设置中修改。';
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'jgr-button';
       button.textContent = '打开读卡设置';
       button.addEventListener('click', () => view.openSettings());
-      settings.append(summary, hint, button, view.createUpdateControls());
+      settings.append(summary, view.createUpdateControls(), hint, button);
       settingsContainer.append(settings);
     }
   };

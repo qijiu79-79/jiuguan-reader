@@ -76,13 +76,13 @@ export class ReaderView {
 
   createUpdateControls(): HTMLElement {
     const controls = element('section', 'jgr-update-controls');
-    controls.append(element('strong', '', '插件更新'));
     controls.append(element('p', 'jgr-muted', `当前版本：${READER_EXTENSION_VERSION}`));
-    controls.append(element('p', 'jgr-muted', '更新不会自动刷新。刷新前请保存酒馆聊天、扩展和其他页面中的未提交内容。'));
+    controls.append(element('p', 'jgr-muted', '更新直接在这里下载，不另开弹窗。刷新前请保存酒馆其他未提交的输入。'));
 
     const actions = element('div', 'jgr-update-actions');
     const updateButton = button('一键更新', 'jgr-primary');
-    const reloadButton = button('刷新应用更新', 'jgr-primary');
+    const reloadButton = button('刷新页面', 'jgr-primary');
+    reloadButton.title = '重新载入整个酒馆页面，应用已下载的更新；请先保存其他输入。';
     reloadButton.hidden = true;
     actions.append(updateButton, reloadButton);
     const status = element('p', 'jgr-update-status');
@@ -192,7 +192,7 @@ export class ReaderView {
     const save = button('保存设置', 'jgr-primary');
     save.type = 'submit';
     save.id = 'jgr-save-settings';
-    form.append(advanced, this.settingsStatus, save, this.createUpdateControls());
+    form.append(advanced, this.settingsStatus, save);
     form.addEventListener('input', () => { this.settingsDirty = true; this.settingsStatus.textContent = '有未保存的修改；关闭设置后输入仍保留。'; });
     form.addEventListener('change', () => { this.settingsDirty = true; });
     form.addEventListener('submit', (event) => {
@@ -420,7 +420,7 @@ export class ReaderView {
       return;
     }
     if (phase === 'updated') {
-      feedback.textContent = '更新已下载，请使用“刷新应用更新”按钮完成应用。';
+      feedback.textContent = '更新已下载，请点击这里的“刷新页面”按钮生效。';
       feedback.hidden = false;
       return;
     }
@@ -454,8 +454,7 @@ export class ReaderView {
       feedback.hidden = false;
       return;
     }
-    const confirmed = window.confirm('更新已下载。刷新会重新载入整个酒馆页面；请先保存聊天草稿、酒馆设置和其他扩展中的输入。确认现在刷新吗？');
-    if (confirmed) window.location.reload();
+    window.location.reload();
   }
 
   private getUpdateBlockReason(): string {

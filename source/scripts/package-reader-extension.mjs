@@ -32,6 +32,7 @@ export const sourceFiles = [
   'tests/tavern-reader-extension-host.test.ts', 'tests/tavern-reader-extension-storage.test.ts',
   'tests/tavern-reader-extension-browser-compat.test.ts',
   'tests/tavern-reader-extension-updater.test.ts',
+  'tests/tavern-reader-extension-ui.test.ts',
   'tests/tavern-reader-extension-packaging.test.ts',
   'scripts/package-reader-extension.mjs', 'scripts/tavern-reader-extension-qa.ts',
   'tests/fixtures/tavern/reader-extension-card.json',
