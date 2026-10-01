@@ -88,11 +88,18 @@ async function initialize(): Promise<void> {
     }
     const settingsContainer = document.getElementById('extensions_settings');
     if (settingsContainer && !document.getElementById('jgr-extension-settings')) {
-      const settings = document.createElement('details');
+      const settings = document.createElement('div');
       settings.id = 'jgr-extension-settings';
-      settings.className = 'jgr-extension-settings extension_container';
-      const summary = document.createElement('summary');
-      summary.textContent = '酒馆读卡';
+      settings.className = 'inline-drawer jgr-extension-settings extension_container';
+      const header = document.createElement('div');
+      header.className = 'inline-drawer-toggle inline-drawer-header';
+      const title = document.createElement('b');
+      title.textContent = '酒馆读卡';
+      const icon = document.createElement('div');
+      icon.className = 'inline-drawer-icon fa-solid fa-circle-chevron-down down';
+      header.append(title, icon);
+      const content = document.createElement('div');
+      content.className = 'inline-drawer-content';
       const hint = document.createElement('p');
       hint.className = 'jgr-muted';
       hint.textContent = '在角色卡头像旁点“读卡”。连接、提示词与快捷问题可在下面的设置中修改。';
@@ -101,7 +108,8 @@ async function initialize(): Promise<void> {
       button.className = 'jgr-button';
       button.textContent = '打开读卡设置';
       button.addEventListener('click', () => view.openSettings());
-      settings.append(summary, view.createUpdateControls(), hint, button);
+      content.append(view.createUpdateControls(), hint, button);
+      settings.append(header, content);
       settingsContainer.append(settings);
     }
   };

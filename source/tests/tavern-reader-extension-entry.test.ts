@@ -33,6 +33,23 @@ test('MutationObserver 重复触发会合并，入口已经最左时不再改 DO
   assert.match(mountSource, /toolbar\.firstElementChild !== entry/u, '入口已在最左时不得再次 prepend，避免观察器空转');
 });
 
+test('扩展设置栏复用酒馆原生 inline-drawer 标题、折叠图标和内容结构', () => {
+  assert.match(mountSource, /const settings = document\.createElement\('div'\)/u);
+  assert.match(mountSource, /settings\.className = 'inline-drawer jgr-extension-settings extension_container'/u);
+  assert.match(mountSource, /header\.className = 'inline-drawer-toggle inline-drawer-header'/u);
+  assert.match(mountSource, /title\.textContent = '酒馆读卡'/u);
+  assert.match(mountSource, /icon\.className = 'inline-drawer-icon fa-solid fa-circle-chevron-down down'/u);
+  assert.match(mountSource, /content\.className = 'inline-drawer-content'/u);
+  assert.match(mountSource, /content\.append\(view\.createUpdateControls\(\), hint, button\)/u);
+  assert.match(mountSource, /settings\.append\(header, content\)/u);
+  assert.equal((mountSource.match(/view\.createUpdateControls\(\)/gu) ?? []).length, 1, '扩展设置栏只创建一个更新入口');
+  assert.match(mountSource, /button\.addEventListener\('click', \(\) => view\.openSettings\(\)\)/u);
+  assert.doesNotMatch(mountSource, /document\.createElement\('(details|summary)'\)/u);
+  assert.match(styleSource, /\.jgr-extension-settings > \.inline-drawer-header,\s*\.jgr-extension-settings > \.inline-drawer-content\s*\{[^}]*min-width:\s*0/su);
+  assert.match(styleSource, /\.jgr-extension-settings > \.inline-drawer-content\s*\{[^}]*overflow-wrap:\s*anywhere/su);
+  assert.doesNotMatch(styleSource, /\.jgr-extension-settings summary/u);
+});
+
 test('所有读卡弹窗和滚动表单使用不透明深色背景与高对比文字', () => {
   const dialogRule = styleSource.match(/\.jgr-dialog\s*\{([^}]*)\}/u)?.[1] ?? '';
   const scrollRule = styleSource.match(/\.jgr-dialog \.jgr-scroll\s*\{([^}]*)\}/u)?.[1] ?? '';

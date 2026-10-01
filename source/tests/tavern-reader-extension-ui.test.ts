@@ -698,6 +698,51 @@ test('普通检查和下载不弹窗、不请求确认，也不自动刷新', as
   });
 });
 
+test('下载更新不受未保存输入或读卡任务状态拦截，并保留所有输入', async () => {
+  const spies = emptySpies();
+  await withFakeBrowser(spies, async () => {
+    const scenarios: Array<{
+      name: string;
+      settingsDirty?: boolean;
+      questionText?: string;
+      questionDrafts?: Array<[string, string]>;
+      controllerState?: Partial<ControllerState>;
+    }> = [
+      { name: '未保存设置', settingsDirty: true },
+      { name: '当前问题草稿', questionText: '当前角色的虚构问题草稿' },
+      { name: '其他角色的问题草稿', questionDrafts: [['fictional-other-card', '其他角色的虚构追问']] },
+      { name: '未保存解读结果', controllerState: { unsaved: true } },
+      { name: '资料加载中', controllerState: { loading: true } },
+      { name: '读卡任务忙', controllerState: { busy: true } },
+    ];
+
+    for (const scenario of scenarios) {
+      const updater = createFakeUpdater('idle', async (setState) => {
+        setState('checking', '正在检查虚构更新。');
+        setState('updating', '正在下载虚构更新。');
+        setState('updated', '虚构更新已下载。');
+      });
+      const view = createView({ ...scenario, updater });
+      const beforeState = { ...view.controller.getState() };
+      const beforeQuestion = view.questionInput.value;
+      const beforeDrafts = [...view.questionDrafts];
+      const feedback = fakeFeedback(spies);
+
+      await view.requestExtensionUpdate(feedback as unknown as HTMLElement);
+
+      assert.equal(updater.updateCalls(), 1, `${scenario.name}时仍应启动下载`);
+      assert.equal(updater.getState().phase, 'updated', `${scenario.name}时应完成下载`);
+      assert.equal(feedback.hidden, true, `${scenario.name}时不应显示拦截提示`);
+      assert.equal(view.settingsDirty, scenario.settingsDirty ?? false, `${scenario.name}时应保留设置未保存标记`);
+      assert.deepEqual(view.controller.getState(), beforeState, `${scenario.name}时不应改动读卡状态`);
+      assert.equal(view.questionInput.value, beforeQuestion, `${scenario.name}时应保留当前问题草稿`);
+      assert.deepEqual([...view.questionDrafts], beforeDrafts, `${scenario.name}时应保留所有角色的问题草稿`);
+      assert.equal(view.updateRequestPending, false, `${scenario.name}下载完成后应清除更新进行标记`);
+      assert.deepEqual(spies, { showModalCalls: 0, confirmCalls: 0, reloadCalls: 0 });
+    }
+  });
+});
+
 test('已下载且没有拦截条件时，点击刷新页面只刷新一次且不确认', async () => {
   const spies = emptySpies();
   await withFakeBrowser(spies, () => {
@@ -718,28 +763,49 @@ test('已下载且没有拦截条件时，点击刷新页面只刷新一次且�
 test('未保存输入或读卡任务忙时不刷新，并保留问题草稿', async () => {
   const spies = emptySpies();
   await withFakeBrowser(spies, () => {
-    for (const scenario of [
-      { name: '未保存', settingsDirty: true, busy: false, expected: /未保存/u },
-      { name: '任务忙', settingsDirty: false, busy: true, expected: /正在进行/u },
-    ]) {
+    const scenarios: Array<{
+      name: string;
+      settingsDirty?: boolean;
+      questionText?: string;
+      questionDrafts?: Array<[string, string]>;
+      controllerState?: Partial<ControllerState>;
+      expected: RegExp;
+    }> = [
+      { name: '未保存设置', settingsDirty: true, expected: /未保存/u },
+      { name: '未保存解读结果', controllerState: { unsaved: true }, expected: /未保存/u },
+      { name: '当前问题草稿', questionText: '当前角色的虚构问题草稿', expected: /未保存/u },
+      { name: '其他角色的问题草稿', questionDrafts: [['fictional-other-card', '其他角色的虚构追问']], expected: /未保存/u },
+      { name: '资料加载中', controllerState: { loading: true }, expected: /正在读取角色卡资料/u },
+      { name: '读卡任务忙', controllerState: { busy: true }, expected: /正在进行/u },
+    ];
+
+    for (const scenario of scenarios) {
       const updater = createFakeUpdater('updated');
-      const draftText = `虚构追问-${scenario.name}`;
       const view = createView({
         updater,
         settingsDirty: scenario.settingsDirty,
-        questionText: draftText,
-        questionDrafts: [['fictional-card', draftText]],
-        controllerState: { busy: scenario.busy },
+        questionText: scenario.questionText,
+        questionDrafts: scenario.questionDrafts,
+        controllerState: scenario.controllerState,
       });
+      const beforeState = { ...view.controller.getState() };
+      const beforeQuestion = view.questionInput.value;
+      const beforeDrafts = [...view.questionDrafts];
       const feedback = fakeFeedback(spies);
 
       view.reloadAfterUpdate(feedback as unknown as HTMLElement);
 
       assert.equal(spies.reloadCalls, 0, `${scenario.name}时不能刷新`);
       assert.match(feedback.textContent, scenario.expected);
-      assert.equal(view.questionInput.value, draftText);
-      assert.deepEqual([...view.questionDrafts], [['fictional-card', draftText]]);
+      assert.equal(view.settingsDirty, scenario.settingsDirty ?? false, `${scenario.name}时应保留设置未保存标记`);
+      assert.deepEqual(view.controller.getState(), beforeState, `${scenario.name}时不应改动读卡状态`);
+      assert.equal(view.questionInput.value, beforeQuestion, `${scenario.name}时应保留当前问题草稿`);
+      assert.deepEqual([...view.questionDrafts], beforeDrafts, `${scenario.name}时应保留所有角色的问题草稿`);
     }
+
+    assert.equal(spies.confirmCalls, 0);
+    assert.equal(spies.showModalCalls, 0);
+    assert.equal(spies.reloadCalls, 0);
   });
 });
 

@@ -77,8 +77,10 @@
 .jgr-generation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
 .jgr-original { white-space: pre-wrap; font-family: inherit; font-size: 14px; overflow-wrap: anywhere; }
 .jgr-entry { gap: 4px !important; font-size: 12px !important; padding: 3px 6px !important; cursor: pointer; white-space: nowrap; }
-.jgr-extension-settings { min-width: 0; padding: 8px 0; }
-.jgr-extension-settings summary { font-weight: 600; cursor: pointer; }
+.jgr-extension-settings { min-width: 0; }
+.jgr-extension-settings > .inline-drawer-header,
+.jgr-extension-settings > .inline-drawer-content { min-width: 0; }
+.jgr-extension-settings > .inline-drawer-content { overflow-wrap: anywhere; }
 .jgr-update-controls { min-width: 0; margin-top: 8px; overflow-wrap: anywhere; }
 .jgr-update-controls [hidden] { display: none !important; }
 .jgr-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; margin: 8px 0; }

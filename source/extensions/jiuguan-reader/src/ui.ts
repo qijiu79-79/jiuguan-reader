@@ -92,7 +92,7 @@ export class ReaderView {
   createUpdateControls(): HTMLElement {
     const controls = element('section', 'jgr-update-controls');
     controls.append(element('p', 'jgr-muted', `当前版本：${READER_EXTENSION_VERSION}`));
-    controls.append(element('p', 'jgr-muted', '更新直接在这里下载，不另开弹窗。刷新前请保存酒馆其他未提交的输入。'));
+    controls.append(element('p', 'jgr-muted', '更新直接在这里下载，不另开弹窗，也不清除未保存输入。刷新前再保存读卡草稿与酒馆其他未提交的输入。'));
 
     const actions = element('div', 'jgr-update-actions');
     const updateButton = button('一键更新', 'jgr-primary');
@@ -631,7 +631,7 @@ export class ReaderView {
   }
 
   private reloadAfterUpdate(feedback: HTMLElement): void {
-    const blocked = this.getUpdateBlockReason();
+    const blocked = this.getReloadBlockReason();
     if (blocked) {
       feedback.textContent = blocked;
       feedback.hidden = false;
@@ -647,10 +647,16 @@ export class ReaderView {
 
   private getUpdateBlockReason(): string {
     if (this.updateRequestPending) return '更新操作仍在完成，请稍候。';
+    return '';
+  }
+
+  private getReloadBlockReason(): string {
+    const pending = this.getUpdateBlockReason();
+    if (pending) return pending;
     const state = this.controller.getState();
-    if (state.loading) return '正在读取角色卡资料，请完成后再更新。';
-    if (state.busy) return '读卡、追问或保存正在进行，请等待结束后再更新。';
-    if (this.hasUnsavedInput()) return '检测到未保存的读卡设置、问题草稿或解读结果。请先保存设置和结果，或清空问题草稿；输入仍保留。';
+    if (state.loading) return '正在读取角色卡资料，请完成后再刷新。更新文件已经下载，不需要重新更新。';
+    if (state.busy) return '读卡、追问或保存正在进行，请等待结束后再刷新。更新文件已经下载，不需要重新更新。';
+    if (this.hasUnsavedInput()) return '更新文件已经下载。检测到未保存的读卡设置、问题草稿或解读结果；请在刷新前保存设置和结果，或清空不需要的问题草稿。当前输入仍保留。';
     return '';
   }
 
