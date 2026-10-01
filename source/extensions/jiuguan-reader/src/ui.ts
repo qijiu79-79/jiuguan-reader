@@ -3,7 +3,7 @@ import { renderReadingText } from './render.js';
 import { READER_EXTENSION_VERSION } from './updater.js';
 import type { ReaderController, ReaderState } from './controller.js';
 import type { ExtensionUpdater } from './updater.js';
-import type { ReaderHost, ReaderSettings, ReaderSource } from './types.js';
+import type { ReaderConnection, ReaderHost, ReaderSettings, ReaderSource } from './types.js';
 
 export class ReaderView {
   private readonly panel = makeDialog('jgr-reader-dialog', '角色卡解读');
@@ -31,11 +31,25 @@ export class ReaderView {
   private readonly analysisInput = element('textarea', 'jgr-prompt-input');
   private readonly connectionMode = element('select');
   private readonly profileInput = element('select');
+  private readonly modelSelect = element('select');
+  private readonly modelInput = element('input');
+  private readonly modelSummary = element('div', 'jgr-connection-summary');
+  private readonly modelsStatus = element('p', 'jgr-status');
+  private readonly fetchModelsButton = button('拉取模型列表');
+  private readonly inheritGenerationInput = element('input');
+  private readonly temperatureInput = element('input');
+  private readonly topPInput = element('input');
+  private readonly frequencyInput = element('input');
+  private readonly presenceInput = element('input');
+  private readonly generationFields = element('div', 'jgr-generation-fields');
+  private availableModels: string[] = [];
+  private modelRequest: AbortController | null = null;
   private readonly contextInput = element('input');
   private readonly outputInput = element('input');
   private readonly shortcutsInput = element('textarea');
   private readonly settingsStatus = element('div', 'jgr-status');
   private settingsDirty = false;
+  private settingsEditVersion = 0;
   private view: 'analysis' | 'answers' = 'analysis';
   private previousRecord: ReaderState['record'] | undefined;
   private previousDocument: ReaderState['document'] = null;
@@ -71,6 +85,7 @@ export class ReaderView {
   openSettings(): void {
     this.updateProfiles();
     if (!this.settingsDirty) this.fillSettings(this.host.getSettings());
+    else this.refreshModelSummary();
     if (!this.settingsPanel.open) this.settingsPanel.showModal();
   }
 
@@ -160,10 +175,62 @@ export class ReaderView {
     this.connectionMode.id = 'jgr-connection-mode';
     this.connectionMode.append(option('current', '跟随酒馆当前 API'), option('profile', '独立连接：酒馆已保存的配置'));
     this.profileInput.id = 'jgr-connection-profile';
-    this.connectionMode.addEventListener('change', () => { this.settingsDirty = true; this.updateProfileVisibility(); });
+    this.connectionMode.addEventListener('change', () => this.connectionChanged());
+    this.profileInput.addEventListener('change', () => this.connectionChanged());
     form.append(field('API 连接', this.connectionMode));
     form.append(field('独立连接配置', this.profileInput));
     form.append(element('p', 'jgr-muted', '独立连接请先在酒馆“连接配置”中保存，再在这里选用。读卡不会切换聊天连接，也不复制或保存 API Key。'));
+    this.modelSummary.setAttribute('role', 'status');
+    this.modelSummary.setAttribute('aria-live', 'polite');
+    form.append(this.modelSummary);
+    this.modelSelect.id = 'jgr-model-select';
+    this.modelInput.id = 'jgr-model-input';
+    this.modelInput.type = 'text';
+    this.modelInput.placeholder = '例如：服务商给出的完整模型 ID';
+    this.modelInput.autocomplete = 'off';
+    this.modelSelect.addEventListener('change', () => { this.refreshModelSummary(); });
+    this.modelInput.addEventListener('input', () => this.refreshModelSummary());
+    form.append(field('用于读卡的模型', this.modelSelect), field('手动填写模型 ID', this.modelInput));
+    this.fetchModelsButton.id = 'jgr-fetch-models';
+    this.fetchModelsButton.addEventListener('click', () => { void this.fetchModels(); });
+    const modelActions = element('div', 'jgr-model-actions');
+    modelActions.append(this.fetchModelsButton);
+    this.modelsStatus.setAttribute('role', 'status');
+    this.modelsStatus.setAttribute('aria-live', 'polite');
+    this.modelsStatus.hidden = true;
+    form.append(modelActions, this.modelsStatus, element('p', 'jgr-muted', '可保留连接里的模型，也可拉取后另选或手动填写。只影响读卡，不改酒馆聊天模型。拉取列表不发送角色卡或调用生成。'));
+
+    const generation = element('details', 'jgr-scope');
+    generation.open = true;
+    generation.append(element('summary', '', '生成参数（温度、输出长度等）'));
+    this.inheritGenerationInput.id = 'jgr-inherit-generation';
+    this.inheritGenerationInput.type = 'checkbox';
+    this.inheritGenerationInput.addEventListener('change', () => this.updateGenerationVisibility());
+    const inherit = element('label', 'jgr-checkbox');
+    inherit.append(this.inheritGenerationInput, element('span', '', '使用酒馆当前生成参数'));
+    generation.append(inherit);
+    const samplingInputs = [
+      [this.temperatureInput, 'jgr-temperature', '温度 Temperature', 0, 2],
+      [this.topPInput, 'jgr-top-p', 'Top P', 0, 1],
+      [this.frequencyInput, 'jgr-frequency-penalty', '频率惩罚（减少重复用词）', -2, 2],
+      [this.presenceInput, 'jgr-presence-penalty', '存在惩罚（增加内容变化）', -2, 2],
+    ] as const;
+    for (const [input, id, label, min, max] of samplingInputs) {
+      input.id = id;
+      input.type = 'number';
+      input.min = String(min);
+      input.max = String(max);
+      input.step = 'any';
+      input.required = true;
+      this.generationFields.append(field(label, input));
+    }
+    this.outputInput.id = 'jgr-output-tokens';
+    this.outputInput.type = 'number';
+    this.outputInput.min = '1';
+    this.outputInput.step = '1';
+    this.outputInput.required = true;
+    generation.append(this.generationFields, field('单次最大输出 token', this.outputInput), element('p', 'jgr-muted', '取消勾选后使用本插件的读卡参数。选择独立连接时，勾选项仍沿用酒馆当前四项采样参数，不会导入连接档案预设或隐藏提示词。温度越低越稳定；最大输出始终按这里的设置。服务商可能不支持某些参数，实际错误会直接显示。'));
+    form.append(generation);
     this.systemInput.id = 'jgr-system-prompt';
     this.systemInput.rows = 5;
     this.analysisInput.id = 'jgr-analysis-prompt';
@@ -175,26 +242,24 @@ export class ReaderView {
     restore.id = 'jgr-restore-prompt';
     restore.addEventListener('click', () => {
       this.analysisInput.value = DEFAULT_ANALYSIS_PROMPT;
-      this.settingsDirty = true;
-      this.settingsStatus.textContent = '已恢复默认读卡提示词，点击“保存设置”后生效。系统提示词没有改动。';
+      this.markSettingsDirty('已恢复默认读卡提示词，点击“保存设置”后生效。系统提示词没有改动。');
     });
     promptLabel.append(restore);
     form.append(promptLabel);
     const advanced = element('details', 'jgr-scope');
     advanced.append(element('summary', '', '分块与快捷问题'));
-    for (const input of [this.contextInput, this.outputInput]) { input.type = 'number'; input.min = '1'; input.step = '1'; }
+    this.contextInput.type = 'number'; this.contextInput.min = '1'; this.contextInput.step = '1'; this.contextInput.required = true;
     this.contextInput.id = 'jgr-context-chars';
-    this.outputInput.id = 'jgr-output-tokens';
     this.shortcutsInput.id = 'jgr-shortcuts';
     this.shortcutsInput.rows = 4;
-    advanced.append(field('单次请求文字预算（字符，非精确 token）', this.contextInput), field('单次最大输出 token', this.outputInput), field('快捷问题（每行一个，可自由修改）', this.shortcutsInput));
+    advanced.append(field('单次请求文字预算（字符，非精确 token）', this.contextInput), field('快捷问题（每行一个，可自由修改）', this.shortcutsInput));
     advanced.append(element('p', 'jgr-muted', '长卡与大世界书会完整分段读取，可能产生多次请求。不自动截断资料或提示词。'));
     const save = button('保存设置', 'jgr-primary');
     save.type = 'submit';
     save.id = 'jgr-save-settings';
     form.append(advanced, this.settingsStatus, save);
-    form.addEventListener('input', () => { this.settingsDirty = true; this.settingsStatus.textContent = '有未保存的修改；关闭设置后输入仍保留。'; });
-    form.addEventListener('change', () => { this.settingsDirty = true; });
+    form.addEventListener('input', () => this.markSettingsDirty());
+    form.addEventListener('change', () => this.markSettingsDirty());
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.saveSettings(save);
@@ -343,23 +408,38 @@ export class ReaderView {
   }
 
   private fillSettings(settings: ReaderSettings): void {
+    this.cancelModelRequest();
+    this.modelsStatus.textContent = '';
+    this.modelsStatus.hidden = true;
     this.systemInput.value = settings.systemPrompt;
     this.analysisInput.value = settings.analysisPrompt;
     this.connectionMode.value = settings.connection.mode;
     this.updateProfiles();
     this.profileInput.value = settings.connection.profileId;
+    this.modelInput.value = settings.connection.model ?? '';
+    this.availableModels = [];
+    this.updateModelOptions(settings.connection.model ? `model:${settings.connection.model}` : '');
+    this.inheritGenerationInput.checked = settings.generation.inherit;
+    this.temperatureInput.value = String(settings.generation.temperature);
+    this.topPInput.value = String(settings.generation.topP);
+    this.frequencyInput.value = String(settings.generation.frequencyPenalty);
+    this.presenceInput.value = String(settings.generation.presencePenalty);
     this.contextInput.value = String(settings.contextChars);
     this.outputInput.value = String(settings.maxOutputTokens);
     this.shortcutsInput.value = settings.quickQuestions.join('\n');
     this.settingsDirty = false;
     this.updateProfileVisibility();
+    this.updateGenerationVisibility();
   }
 
   private updateProfiles(): void {
-    const selection = this.profileInput.value || this.host.getSettings().connection.profileId;
+    const selection = this.settingsDirty ? this.profileInput.value : this.profileInput.value || this.host.getSettings().connection.profileId;
     this.profileInput.replaceChildren(option('', '请选择酒馆已保存的连接'));
     const profiles = this.host.getProfiles();
-    for (const profile of profiles) this.profileInput.append(option(profile.id, profile.name));
+    for (const profile of profiles) {
+      const info = this.host.getConnectionInfo({ mode: 'profile', profileId: profile.id });
+      this.profileInput.append(option(profile.id, info.model ? `${profile.name} · ${info.model}` : `${profile.name} · 未设置模型`));
+    }
     if (selection && !profiles.some((profile) => profile.id === selection)) this.profileInput.append(option(selection, '原连接已不存在，请重新选择'));
     this.profileInput.value = selection;
   }
@@ -368,15 +448,104 @@ export class ReaderView {
     this.profileInput.closest('label')!.hidden = this.connectionMode.value !== 'profile';
   }
 
+  private formConnection(includeModel = true): ReaderConnection {
+    const connection: ReaderConnection = { mode: this.connectionMode.value === 'profile' ? 'profile' : 'current', profileId: this.profileInput.value };
+    const model = this.modelSelect.value === 'manual' ? this.modelInput.value.trim()
+      : this.modelSelect.value.startsWith('model:') ? this.modelSelect.value.slice(6) : '';
+    if (includeModel && model) connection.model = model;
+    return connection;
+  }
+
+  private updateModelOptions(selection = this.modelSelect.value): void {
+    const info = this.host.getConnectionInfo(this.formConnection(false));
+    this.modelSelect.replaceChildren(option('', `跟随连接模型：${info.model || '尚未设置'}`));
+    const selectedModel = selection.startsWith('model:') ? selection.slice(6) : '';
+    const models = [...new Set([...(selectedModel ? [selectedModel] : []), ...this.availableModels])];
+    for (const model of models) this.modelSelect.append(option(`model:${model}`, model));
+    this.modelSelect.append(option('manual', '手动填写模型 ID…'));
+    this.modelSelect.value = selection;
+    this.refreshModelSummary();
+  }
+
+  private refreshModelSummary(): void {
+    this.modelInput.closest('label')!.hidden = this.modelSelect.value !== 'manual';
+    const info = this.host.getConnectionInfo(this.formConnection());
+    this.modelSummary.textContent = `连接：${info.label}${info.source ? ` · ${info.source}` : ''}\n读卡模型：${info.model || '尚未设置，请选择或手动填写'}`;
+  }
+
+  private updateGenerationVisibility(): void {
+    this.generationFields.hidden = this.inheritGenerationInput.checked;
+    for (const input of [this.temperatureInput, this.topPInput, this.frequencyInput, this.presenceInput]) input.disabled = this.inheritGenerationInput.checked;
+  }
+
+  private connectionChanged(): void {
+    this.cancelModelRequest();
+    this.availableModels = [];
+    this.modelsStatus.hidden = true;
+    this.updateProfileVisibility();
+    this.updateModelOptions('');
+  }
+
+  private cancelModelRequest(): void {
+    this.modelRequest?.abort();
+    this.modelRequest = null;
+    this.fetchModelsButton.disabled = false;
+    this.fetchModelsButton.textContent = '拉取模型列表';
+  }
+
+  private async fetchModels(): Promise<void> {
+    if (this.modelRequest) return;
+    const connection = this.formConnection(false);
+    if (connection.mode === 'profile' && !this.host.getProfiles().some((profile) => profile.id === connection.profileId)) {
+      this.modelsStatus.textContent = '请先选择一条有效的酒馆独立连接。';
+      this.modelsStatus.hidden = false;
+      return;
+    }
+    const abort = new AbortController();
+    this.modelRequest = abort;
+    this.fetchModelsButton.disabled = true;
+    this.fetchModelsButton.textContent = '正在拉取模型…';
+    this.modelsStatus.textContent = '正在从所选连接获取模型列表，没有发送角色卡资料。';
+    this.modelsStatus.hidden = false;
+    try {
+      const models = await this.host.listModels(connection, abort.signal);
+      if (this.modelRequest !== abort || abort.signal.aborted) return;
+      this.availableModels = models;
+      this.updateModelOptions();
+      this.modelsStatus.textContent = `已获取 ${models.length} 个模型，请在上方选择；没有自动改动当前选择。`;
+    } catch (error) {
+      if (this.modelRequest !== abort || abort.signal.aborted) return;
+      this.modelsStatus.textContent = error instanceof Error ? error.message : '拉取模型失败，可以手动填写模型 ID。';
+    } finally {
+      if (this.modelRequest === abort) this.cancelModelRequest();
+    }
+  }
+
   private async saveSettings(save: HTMLButtonElement): Promise<void> {
     if (!this.contextInput.checkValidity() || !this.outputInput.checkValidity()) {
       this.settingsStatus.textContent = '分块预算和输出 token 请填写正整数。';
       return;
     }
+    if (!this.inheritGenerationInput.checked && [this.temperatureInput, this.topPInput, this.frequencyInput, this.presenceInput].some((input) => !input.checkValidity() || !input.value.trim())) {
+      this.settingsStatus.textContent = '温度请填 0～2，Top P 填 0～1，两种惩罚值填 -2～2。';
+      return;
+    }
+    if (this.modelSelect.value === 'manual' && !this.modelInput.value.trim()) {
+      this.settingsStatus.textContent = '请填写模型 ID，或选择“跟随连接模型”。';
+      return;
+    }
+    const savedGeneration = this.host.getSettings().generation;
     const raw = {
       systemPrompt: this.systemInput.value,
       analysisPrompt: this.analysisInput.value,
-      connection: { mode: this.connectionMode.value, profileId: this.profileInput.value },
+      connection: this.formConnection(),
+      generation: {
+        inherit: this.inheritGenerationInput.checked,
+        temperature: readBoundedNumber(this.temperatureInput.value, 0, 2, savedGeneration.temperature),
+        topP: readBoundedNumber(this.topPInput.value, 0, 1, savedGeneration.topP),
+        frequencyPenalty: readBoundedNumber(this.frequencyInput.value, -2, 2, savedGeneration.frequencyPenalty),
+        presencePenalty: readBoundedNumber(this.presenceInput.value, -2, 2, savedGeneration.presencePenalty),
+      },
       contextChars: Number(this.contextInput.value),
       maxOutputTokens: Number(this.outputInput.value),
       quickQuestions: this.shortcutsInput.value.split('\n'),
@@ -389,17 +558,36 @@ export class ReaderView {
       this.settingsStatus.textContent = '请先在酒馆保存连接配置，再选择有效的独立连接。';
       return;
     }
+    const editVersionAtSave = this.settingsEditVersion;
+    const normalizedSettings = normalizeReaderSettings(raw);
     save.disabled = true;
     try {
-      await this.host.saveSettings(normalizeReaderSettings(raw));
-      this.settingsDirty = false;
-      this.settingsStatus.textContent = '设置已保存。只影响之后发起的读卡或追问，不会自动调用 AI。';
+      await this.host.saveSettings(normalizedSettings);
+      if (this.settingsEditVersion === editVersionAtSave) {
+        this.settingsDirty = false;
+        if (normalizedSettings.generation.inherit) {
+          this.temperatureInput.value = String(normalizedSettings.generation.temperature);
+          this.topPInput.value = String(normalizedSettings.generation.topP);
+          this.frequencyInput.value = String(normalizedSettings.generation.frequencyPenalty);
+          this.presenceInput.value = String(normalizedSettings.generation.presencePenalty);
+        }
+        this.settingsStatus.textContent = '设置已保存。只影响之后发起的读卡或追问，不会自动调用 AI。';
+      } else {
+        this.settingsDirty = true;
+        this.settingsStatus.textContent = '已保存开始时的设置，但保存期间又有新修改；输入仍保留，请再次保存。';
+      }
       this.render(this.controller.getState());
     } catch (error) {
       this.settingsStatus.textContent = error instanceof Error ? `设置保存失败：${error.message}` : '设置保存失败，输入仍保留。';
     } finally {
       save.disabled = false;
     }
+  }
+
+  private markSettingsDirty(message = '有未保存的修改；关闭设置后输入仍保留。'): void {
+    this.settingsEditVersion += 1;
+    this.settingsDirty = true;
+    this.settingsStatus.textContent = message;
   }
 
   private hasUnsavedInput(): boolean {
@@ -510,4 +698,10 @@ function closeButton(dialog: HTMLDialogElement): HTMLButtonElement {
   node.title = '关闭（未保存的设置输入仍保留）';
   node.addEventListener('click', () => dialog.close());
   return node;
+}
+
+function readBoundedNumber(value: string, minimum: number, maximum: number, fallback: number): number {
+  if (!value.trim()) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }

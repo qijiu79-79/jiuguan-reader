@@ -28,12 +28,28 @@ export interface ReadingDocument {
 export interface ReaderConnection {
   mode: 'current' | 'profile';
   profileId: string;
+  model?: string;
+}
+
+export interface ReaderGenerationSettings {
+  inherit: boolean;
+  temperature: number;
+  topP: number;
+  frequencyPenalty: number;
+  presencePenalty: number;
+}
+
+export interface ReaderConnectionInfo {
+  label: string;
+  source: string;
+  model: string;
 }
 
 export interface ReaderSettings {
   systemPrompt: string;
   analysisPrompt: string;
   connection: ReaderConnection;
+  generation: ReaderGenerationSettings;
   contextChars: number;
   maxOutputTokens: number;
   quickQuestions: string[];
@@ -97,6 +113,8 @@ export interface ReaderHost {
   getSettings(): ReaderSettings;
   saveSettings(settings: ReaderSettings): Promise<void>;
   getProfiles(): ConnectionProfile[];
+  getConnectionInfo(connection: ReaderConnection): ReaderConnectionInfo;
+  listModels(connection: ReaderConnection, signal?: AbortSignal): Promise<string[]>;
   describeConnection(connection: ReaderConnection): string;
   generate(messages: ReaderMessage[], settings: ReaderSettings, signal: AbortSignal): Promise<string>;
   store: ReadingStore;

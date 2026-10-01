@@ -38,3 +38,37 @@ test('非法数值恢复默认，默认快捷问题不共享可变数组', () =>
   defaults.quickQuestions.push('额外问题');
   assert.notDeepEqual(defaults.quickQuestions, defaultReaderSettings().quickQuestions);
 });
+
+test('旧版设置升级后仍继承酒馆模型和参数，新参数对象不共享引用', () => {
+  const old = normalizeReaderSettings({ connection: { mode: 'profile', profileId: 'old-profile' }, analysisPrompt: '旧提示词' });
+  assert.deepEqual(old.connection, { mode: 'profile', profileId: 'old-profile' });
+  assert.deepEqual(old.generation, { inherit: true, temperature: 0.7, topP: 1, frequencyPenalty: 0, presencePenalty: 0 });
+  assert.equal(old.analysisPrompt, '旧提示词');
+  old.generation.temperature = 1.5;
+  assert.equal(defaultReaderSettings().generation.temperature, 0.7);
+});
+
+test('完整模型 ID 和独立生成参数可保存，但额外密钥字段不进入设置', () => {
+  const model = `fictional-provider/${'very-long-model-'.repeat(12)}2026`;
+  const settings = normalizeReaderSettings({
+    connection: { mode: 'current', profileId: '', model: `  ${model}  `, apiKey: 'fake-do-not-store' },
+    generation: { inherit: false, temperature: 0.15, topP: 0.8, frequencyPenalty: 0.3, presencePenalty: -0.4, apiKey: 'fake' },
+    apiKey: 'fake',
+  });
+  assert.equal(settings.connection.model, model);
+  assert.deepEqual(settings.generation, { inherit: false, temperature: 0.15, topP: 0.8, frequencyPenalty: 0.3, presencePenalty: -0.4 });
+  assert.equal(JSON.stringify(settings).includes('fake'), false);
+  assert.equal('model' in normalizeReaderSettings({ connection: { model: '  ' } }).connection, false);
+});
+
+test('生成参数接受完整边界和小数，非法或非有限值恢复默认', () => {
+  for (const generation of [
+    { inherit: false, temperature: 0, topP: 0, frequencyPenalty: -2, presencePenalty: 2 },
+    { inherit: false, temperature: 2, topP: 1, frequencyPenalty: 2, presencePenalty: -2 },
+  ]) assert.deepEqual(normalizeReaderSettings({ generation }).generation, generation);
+
+  for (const generation of [
+    { temperature: -0.1, topP: 1.1, frequencyPenalty: -2.1, presencePenalty: 2.1 },
+    { temperature: Infinity, topP: NaN, frequencyPenalty: '0.3', presencePenalty: null },
+  ]) assert.deepEqual(normalizeReaderSettings({ generation }).generation, defaultReaderSettings().generation);
+});

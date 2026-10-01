@@ -41,6 +41,7 @@ test('publish directory is fresh, root contains only install files, and source i
   assert.ok(sourceFiles.includes('extensions/jiuguan-reader/src/updater.ts'));
   assert.ok(sourceFiles.includes('tests/tavern-reader-extension-updater.test.ts'));
   assert.ok(sourceFiles.includes('tests/tavern-reader-extension-ui.test.ts'));
+  assert.ok(sourceFiles.includes('tests/tavern-reader-extension-entry.test.ts'));
   assert.ok(sourceFiles.includes('tests/tavern-reader-extension-packaging.test.ts'));
 
   const firstDirectory = await createPublishDirectory({

@@ -211,7 +211,7 @@ test('profile API uses raw Chat Completion data and hides non-Chat profiles from
 
   assert.equal(result, '指定连接结果');
   assert.deepEqual(host.getProfiles(), [{ id: 'profile-a', name: '专用读卡连接' }]);
-  assert.equal(host.describeConnection({ mode: 'profile', profileId: 'profile-a' }), '专用读卡连接');
+  assert.equal(host.describeConnection({ mode: 'profile', profileId: 'profile-a' }), '专用读卡连接（profile-model）');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].profileId, 'profile-a');
   assert.deepEqual(calls[0].messages, messages);
@@ -622,6 +622,331 @@ test('settings save awaits native confirmation and restores in-memory settings a
   shouldFail = true;
   await assert.rejects(host.saveSettings({ ...settings, analysisPrompt: '不应留下的设置' }), /没有确认读卡设置/u);
   assert.equal(fixture.context.extensionSettings!['jiuguan-reader'], savedValue);
+});
+
+test('connection summary exposes complete current/profile model IDs and a reader-only override', () => {
+  const fixture = createCharacterContext();
+  const longModel = `provider/${'long-model-name-'.repeat(14)}2026`;
+  fixture.setCurrentModel(longModel);
+  fixture.connectionProfiles.push({ id: 'profile-a', name: '独立读卡', api: 'chat-profile', model: 'profile-model' });
+  const host = createReaderHost({ getContext: () => fixture.context, store: nullStore });
+  assert.deepEqual(host.getConnectionInfo({ mode: 'current', profileId: '' }), { label: '酒馆当前连接', source: 'openai', model: longModel });
+  assert.deepEqual(host.getConnectionInfo({ mode: 'profile', profileId: 'profile-a' }), { label: '独立读卡', source: 'custom', model: 'profile-model' });
+  assert.equal(host.getConnectionInfo({ mode: 'profile', profileId: 'profile-a', model: '  reader-only  ' }).model, 'reader-only');
+  assert.equal(host.describeConnection({ mode: 'current', profileId: '' }), `酒馆当前连接（${longModel}）`);
+});
+
+test('current and profile model/sampling overrides affect only reader requests, never host settings', async () => {
+  for (const mode of ['current', 'profile'] as const) {
+    const fixture = createCharacterContext();
+    fixture.connectionProfiles.push({ id: 'profile-a', name: '独立读卡', api: 'chat-profile', model: 'profile-model', 'secret-id': 'mock-secret-id' });
+    const originalSettings = JSON.stringify(fixture.context.chatCompletionSettings);
+    const originalProfiles = JSON.stringify(fixture.connectionProfiles);
+    let payload: Record<string, unknown> | undefined;
+    fixture.context.ChatCompletionService!.processRequest = async (data) => {
+      payload = data;
+      return makeCompletionResponse('当前连接结果', 'stop');
+    };
+    fixture.context.ConnectionManagerRequestService!.sendRequest = async (_id, _messages, _tokens, _options, override) => {
+      payload = override;
+      return makeCompletionResponse('独立连接结果', 'stop');
+    };
+    const host = createReaderHost({ getContext: () => fixture.context, store: nullStore });
+    const settings: ReaderSettings = {
+      ...host.getSettings(),
+      connection: { mode, profileId: mode === 'profile' ? 'profile-a' : '', model: 'reader-model' },
+      generation: { inherit: false, temperature: 0.17, topP: 0.73, frequencyPenalty: 0.4, presencePenalty: -0.3 },
+    };
+    await host.generate([{ role: 'user', content: '虚构资料' }], settings, new AbortController().signal);
+    assert.equal(payload?.model, 'reader-model');
+    assert.equal(payload?.temperature, 0.17);
+    assert.equal(payload?.top_p, 0.73);
+    assert.equal(payload?.frequency_penalty, 0.4);
+    assert.equal(payload?.presence_penalty, -0.3);
+    assert.equal(JSON.stringify(fixture.context.chatCompletionSettings), originalSettings);
+    assert.equal(JSON.stringify(fixture.connectionProfiles), originalProfiles);
+    assert.equal(fixture.context.getChatCompletionModel!(), 'current-model-a');
+  }
+});
+
+test('profile inheritance snapshots current sampling values without importing the profile preset or chat prompts', async () => {
+  const fixture = createCharacterContext();
+  fixture.connectionProfiles.push({ id: 'profile-a', name: '独立读卡', api: 'chat-profile', model: 'profile-model' });
+  const overrides: Record<string, unknown>[] = [];
+  fixture.context.ConnectionManagerRequestService!.sendRequest = async (_id, messages, _tokens, options, data) => {
+    overrides.push(data);
+    assert.deepEqual(messages, [{ role: 'user', content: '资料' }]);
+    assert.equal(options.includePreset, false);
+    assert.equal(options.includeInstruct, false);
+    return makeCompletionResponse('结果', 'stop');
+  };
+  const host = createReaderHost({ getContext: () => fixture.context, store: nullStore });
+  const settings: ReaderSettings = {
+    ...host.getSettings(), connection: { mode: 'profile', profileId: 'profile-a' },
+    generation: { inherit: true, temperature: 1.5, topP: 0.4, frequencyPenalty: -1, presencePenalty: 1 },
+  };
+  const signal = new AbortController().signal;
+  await host.generate([{ role: 'user', content: '资料' }], settings, signal);
+  fixture.context.chatCompletionSettings!.temp_openai = 0.9;
+  await host.generate([{ role: 'user', content: '资料' }], settings, signal);
+  for (const override of overrides) {
+    assert.equal(override.temperature, 0.4);
+    assert.equal(override.top_p, 0.85);
+    assert.equal(override.frequency_penalty, 0.2);
+    assert.equal(override.presence_penalty, 0);
+    assert.equal(override.use_sysprompt, false);
+  }
+});
+
+test('an explicit reader model can generate with an empty native model, but a profile never borrows the current model', async () => {
+  const fixture = createCharacterContext();
+  fixture.setCurrentModel('');
+  fixture.connectionProfiles.push({ id: 'profile-a', name: '还未选模型', api: 'chat-profile' });
+  const payloads: Record<string, unknown>[] = [];
+  fixture.context.ChatCompletionService!.processRequest = async (payload) => {
+    payloads.push(payload);
+    return makeCompletionResponse('结果', 'stop');
+  };
+  fixture.context.ConnectionManagerRequestService!.sendRequest = async (_id, _messages, _tokens, _options, payload) => {
+    payloads.push(payload);
+    return makeCompletionResponse('结果', 'stop');
+  };
+  const host = createReaderHost({ getContext: () => fixture.context, store: nullStore });
+  await host.generate([{ role: 'user', content: '资料' }], {
+    ...host.getSettings(), connection: { mode: 'current', profileId: '', model: 'reader-only' },
+  }, new AbortController().signal);
+  await assert.rejects(host.generate([{ role: 'user', content: '资料' }], {
+    ...host.getSettings(), connection: { mode: 'profile', profileId: 'profile-a' },
+  }, new AbortController().signal), /独立连接还没有模型/u);
+  await host.generate([{ role: 'user', content: '资料' }], {
+    ...host.getSettings(), connection: { mode: 'profile', profileId: 'profile-a', model: 'reader-only' },
+  }, new AbortController().signal);
+  assert.equal(payloads.length, 2);
+  assert.equal(payloads.every((payload) => payload.model === 'reader-only'), true);
+});
+
+test('changing reader-only model within the same multi-part job stops before the next request', async () => {
+  const fixture = createCharacterContext();
+  let calls = 0;
+  fixture.context.ChatCompletionService!.processRequest = async () => {
+    calls += 1;
+    return makeCompletionResponse('结果', 'stop');
+  };
+  const host = createReaderHost({ getContext: () => fixture.context, store: nullStore });
+  const settings = { ...host.getSettings(), connection: { mode: 'current' as const, profileId: '', model: 'reader-a' } };
+  const signal = new AbortController().signal;
+  await host.generate([{ role: 'user', content: '第一段' }], settings, signal);
+  await assert.rejects(host.generate([{ role: 'user', content: '第二段' }], {
+    ...settings, connection: { ...settings.connection, model: 'reader-b' },
+  }, signal), /连接选择发生变化/u);
+  assert.equal(calls, 1);
+});
+
+test('current model listing uses only the native status route, permits no selected model, and never sends card data', async () => {
+  const fixture = createCharacterContext();
+  fixture.setCurrentModel('');
+  Object.assign(fixture.context.chatCompletionSettings!, {
+    chat_completion_source: 'custom', custom_url: 'http://127.0.0.1:12345/v1',
+    custom_include_headers: '', secret_id: 'mock-current-secret', proxy_password: 'mock-unused-password',
+  });
+  fixture.context.getRequestHeaders = () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'mock-csrf' });
+  let calls = 0;
+  const originalSettings = JSON.stringify(fixture.context.chatCompletionSettings);
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    fetcher: async (url, init) => {
+      calls += 1;
+      assert.equal(url, '/api/backends/chat-completions/status');
+      assert.equal(init?.method, 'POST');
+      assert.equal(init?.cache, 'no-cache');
+      assert.ok(init?.signal instanceof AbortSignal);
+      assert.deepEqual(init?.headers, { 'Content-Type': 'application/json', 'X-CSRF-Token': 'mock-csrf' });
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        chat_completion_source: 'custom', custom_url: 'http://127.0.0.1:12345/v1',
+        custom_include_headers: '', reverse_proxy: '', secret_id: 'mock-current-secret',
+      });
+      return Response.json({ data: [{ id: ' zulu ' }, { id: 'alpha' }, { id: 'alpha' }, { id: '' }, { id: 3 }, null] });
+    },
+  });
+  assert.deepEqual(await host.listModels({ mode: 'current', profileId: '' }), ['alpha', 'zulu']);
+  assert.equal(calls, 1);
+  assert.equal(JSON.stringify(fixture.context.chatCompletionSettings), originalSettings);
+});
+
+test('profile model listing uses its bound endpoint and secret ID, including the no-secret sentinel', async () => {
+  for (const secretId of ['mock-profile-secret', undefined]) {
+    const fixture = createCharacterContext();
+    fixture.connectionProfiles.push({
+      id: 'profile-a', name: '独立连接', api: 'chat-profile', 'api-url': 'http://127.0.0.1:12346/v1',
+      ...(secretId ? { 'secret-id': secretId } : {}),
+    });
+    fixture.context.chatCompletionSettings!.secret_id = 'mock-chat-secret-do-not-use';
+    const host = createReaderHost({
+      getContext: () => fixture.context, store: nullStore,
+      fetcher: async (url, init) => {
+        assert.equal(url, '/api/backends/chat-completions/status');
+        const payload = JSON.parse(String(init?.body));
+        assert.equal(payload.custom_url, 'http://127.0.0.1:12346/v1');
+        assert.equal(payload.chat_completion_source, 'custom');
+        assert.equal(payload.secret_id, secretId ?? 'jiuguan-reader:no-profile-secret');
+        assert.equal('messages' in payload, false);
+        assert.equal('model' in payload, false);
+        assert.equal('proxy_password' in payload, false);
+        return Response.json({ data: [{ id: 'profile-listed-model' }] });
+      },
+    });
+    assert.deepEqual(await host.listModels({ mode: 'profile', profileId: 'profile-a' }), ['profile-listed-model']);
+  }
+});
+
+test('current Custom model listing follows native header macro substitution and keeps original settings intact', async () => {
+  const fixture = createCharacterContext();
+  Object.assign(fixture.context.chatCompletionSettings!, { chat_completion_source: 'custom', custom_include_headers: 'X-Reader: {{fictional_header}}' });
+  let substitutions = 0;
+  fixture.context.substituteParams = (text) => {
+    substitutions += 1;
+    assert.equal(text, 'X-Reader: {{fictional_header}}');
+    return 'X-Reader: mock-header-value';
+  };
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    fetcher: async (_url, init) => {
+      assert.equal(JSON.parse(String(init?.body)).custom_include_headers, 'X-Reader: mock-header-value');
+      return Response.json({ data: [{ id: 'listed-model' }] });
+    },
+  });
+  assert.deepEqual(await host.listModels({ mode: 'current', profileId: '' }), ['listed-model']);
+  assert.equal(substitutions, 1);
+  assert.equal(fixture.context.chatCompletionSettings!.custom_include_headers, 'X-Reader: {{fictional_header}}');
+
+  delete fixture.context.substituteParams;
+  await assert.rejects(host.listModels({ mode: 'current', profileId: '' }), /没有发送未替换的请求头/u);
+});
+
+test('profile with a reverse proxy gives a safe manual-model hint without borrowing the current proxy password', async () => {
+  const fixture = createCharacterContext();
+  fixture.connectionProfiles.push({ id: 'profile-a', name: '代理连接', api: 'chat-profile', model: 'profile-model', proxy: 'mock-proxy' });
+  fixture.context.chatCompletionSettings!.proxy_password = 'mock-current-password';
+  let calls = 0;
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    getProfileProxyEndpoint: () => 'https://mock-proxy.example/v1',
+    fetcher: async () => { calls += 1; return Response.json({ data: [] }); },
+  });
+  await assert.rejects(host.listModels({ mode: 'profile', profileId: 'profile-a' }), /反向代理.*手动填写模型 ID/u);
+  assert.equal(calls, 0);
+});
+
+test('native named None proxy with an empty URL still allows an independent model list without a proxy password', async () => {
+  const fixture = createCharacterContext();
+  fixture.connectionProfiles.push({ id: 'profile-a', name: '没有实际代理', api: 'chat-profile', model: 'profile-model', proxy: 'None' });
+  fixture.context.chatCompletionSettings!.proxy_password = 'mock-current-password';
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    getProfileProxyEndpoint: (name) => { assert.equal(name, 'None'); return ''; },
+    fetcher: async (_url, init) => {
+      const payload = JSON.parse(String(init?.body));
+      assert.equal('proxy_password' in payload, false);
+      assert.equal('reverse_proxy' in payload, false);
+      return Response.json({ data: [{ id: 'profile-model' }] });
+    },
+  });
+  assert.deepEqual(await host.listModels({ mode: 'profile', profileId: 'profile-a' }), ['profile-model']);
+});
+
+test('model list rejects a changed current endpoint or profile before accepting the late result', async () => {
+  for (const mode of ['current', 'profile'] as const) {
+    const fixture = createCharacterContext();
+    fixture.connectionProfiles.push({ id: 'profile-a', name: '独立连接', api: 'chat-profile', model: 'profile-model' });
+    const host = createReaderHost({
+      getContext: () => fixture.context, store: nullStore,
+      fetcher: async () => {
+        if (mode === 'current') fixture.context.chatCompletionSettings!.custom_url = 'https://other.example/v1';
+        else fixture.connectionProfiles[0].model = 'changed-profile-model';
+        return Response.json({ data: [{ id: 'late-model' }] });
+      },
+    });
+    await assert.rejects(host.listModels({ mode, profileId: mode === 'profile' ? 'profile-a' : '' }), /发生变化/u);
+  }
+});
+
+test('model list rejects unsupported/invalid connections, empty or malformed lists and safely redacts fetch failures', async () => {
+  const fixture = createCharacterContext();
+  let calls = 0;
+  const dependencies: ReaderHostDependencies = { getContext: () => fixture.context, store: nullStore };
+  const invalidHost = createReaderHost({ ...dependencies, fetcher: async () => { calls += 1; return Response.json({ data: [] }); } });
+  await assert.rejects(invalidHost.listModels({ mode: 'profile', profileId: 'missing' }), /所选档案不可用/u);
+  fixture.context.mainApi = 'textgenerationwebui';
+  await assert.rejects(invalidHost.listModels({ mode: 'current', profileId: '' }), /仅支持酒馆 Chat Completion/u);
+  assert.equal(calls, 0);
+  fixture.context.mainApi = 'openai';
+  for (const data of [{ data: [] }, { error: { message: 'fake-secret' }, data: [{ id: 'unused' }] }, { data: ['wrong-shape'] }]) {
+    const host = createReaderHost({ ...dependencies, fetcher: async () => Response.json(data) });
+    await assert.rejects(host.listModels({ mode: 'current', profileId: '' }), /没有返回可选模型列表/u);
+  }
+  const httpHost = createReaderHost({ ...dependencies, fetcher: async () => new Response('fake-key-response', { status: 401 }) });
+  await assert.rejects(httpHost.listModels({ mode: 'current', profileId: '' }), /HTTP 401/u);
+  const failureHost = createReaderHost({ ...dependencies, fetcher: async () => { throw new Error('sk-fake-secret https://mock.example?api_key=fake'); } });
+  await assert.rejects(failureHost.listModels({ mode: 'current', profileId: '' }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /无法拉取模型列表/u);
+    assert.doesNotMatch(error.message, /sk-fake-secret|mock\.example|api_key/u);
+    return true;
+  });
+});
+
+test('cancelled model list rejects even if the fetch dependency ignores AbortSignal, and discards its late result', async () => {
+  const fixture = createCharacterContext();
+  let started!: () => void;
+  let finish!: (response: Response) => void;
+  const fetchStarted = new Promise<void>((resolve) => { started = resolve; });
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    fetcher: () => new Promise<Response>((resolve) => { finish = resolve; started(); }),
+  });
+  const abort = new AbortController();
+  const request = host.listModels({ mode: 'current', profileId: '' }, abort.signal);
+  await fetchStarted;
+  abort.abort();
+  await assert.rejects(request, (error: unknown) => error instanceof Error && error.name === 'AbortError');
+  finish(Response.json({ data: [{ id: 'late-model' }] }));
+});
+
+test('cancelled model JSON parsing rejects safely, and already-aborted listing never sends a request', async () => {
+  const fixture = createCharacterContext();
+  let started!: () => void;
+  let finish!: (data: unknown) => void;
+  let calls = 0;
+  const jsonStarted = new Promise<void>((resolve) => { started = resolve; });
+  const response = new Response('');
+  response.json = () => new Promise<unknown>((resolve) => { finish = resolve; started(); });
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    fetcher: async () => { calls += 1; return response; },
+  });
+  const abort = new AbortController();
+  const request = host.listModels({ mode: 'current', profileId: '' }, abort.signal);
+  await jsonStarted;
+  abort.abort();
+  await assert.rejects(request, (error: unknown) => error instanceof Error && error.name === 'AbortError');
+  finish({ data: [{ id: 'late-model' }] });
+  await assert.rejects(host.listModels({ mode: 'current', profileId: '' }, abort.signal), (error: unknown) => error instanceof Error && error.name === 'AbortError');
+  assert.equal(calls, 1);
+});
+
+test('model list times out without waiting for a dependency that ignores cancellation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const fixture = createCharacterContext();
+  let started!: () => void;
+  const fetchStarted = new Promise<void>((resolve) => { started = resolve; });
+  const host = createReaderHost({
+    getContext: () => fixture.context, store: nullStore,
+    fetcher: () => { started(); return new Promise<Response>(() => {}); },
+  });
+  const request = host.listModels({ mode: 'current', profileId: '' });
+  await fetchStarted;
+  t.mock.timers.tick(20_000);
+  await assert.rejects(request, /拉取模型超时/u);
 });
 
 function makeSavedReading(characterKey: string): SavedReading {

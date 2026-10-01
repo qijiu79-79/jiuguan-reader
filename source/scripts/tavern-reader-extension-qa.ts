@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import path from 'node:path';
 
 const MOCK_MODEL = 'reader-qa-mock';
+const MOCK_ALTERNATE_MODEL = 'reader-qa-alternate-with-a-long-model-identifier-2026-10-01';
 const MOCK_SERVICE = 'jiuguan-reader-qa-mock';
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const GREETING_MARKER = 'GREETING_MUST_NOT_BE_SENT';
@@ -45,6 +46,14 @@ interface SafeStats {
   stopResponses: number;
   lengthResponses: number;
   lastRequestUsedExpectedModel: boolean | null;
+  lastGeneration: {
+    model: string | null;
+    temperature: number | null;
+    topP: number | null;
+    frequencyPenalty: number | null;
+    presencePenalty: number | null;
+    maxTokens: number | null;
+  } | null;
 }
 
 interface MockControl {
@@ -103,6 +112,7 @@ const stats: SafeStats = {
   stopResponses: 0,
   lengthResponses: 0,
   lastRequestUsedExpectedModel: null,
+  lastGeneration: null,
 };
 
 const control: MockControl = { mode: 'normal', delayMs: 0, failureStatus: 503 };
@@ -231,7 +241,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     stats.modelListRequests += 1;
     sendJson(response, 200, {
       object: 'list',
-      data: [{ id: MOCK_MODEL, object: 'model', created: 1_791_000_000, owned_by: 'local-qa' }],
+      data: [MOCK_MODEL, MOCK_ALTERNATE_MODEL].map((id) => ({ id, object: 'model', created: 1_791_000_000, owned_by: 'local-qa' })),
     });
     return;
   }
@@ -264,6 +274,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       stopResponses: stats.stopResponses,
       lengthResponses: stats.lengthResponses,
       lastRequestUsedExpectedModel: stats.lastRequestUsedExpectedModel,
+      lastGeneration: stats.lastGeneration,
       control: { mode: control.mode, delayMs: control.delayMs, failureStatus: control.failureStatus },
     });
     return;
@@ -351,6 +362,7 @@ function resetStats(): void {
   stats.stopResponses = 0;
   stats.lengthResponses = 0;
   stats.lastRequestUsedExpectedModel = null;
+  stats.lastGeneration = null;
 }
 
 async function handleCompletion(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -406,6 +418,13 @@ async function handleCompletion(request: IncomingMessage, response: ServerRespon
   }
 
   stats.lastRequestUsedExpectedModel = body.model === MOCK_MODEL;
+  const safeNumber = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  stats.lastGeneration = {
+    model: typeof body.model === 'string' ? body.model : null,
+    temperature: safeNumber(body.temperature), topP: safeNumber(body.top_p),
+    frequencyPenalty: safeNumber(body.frequency_penalty), presencePenalty: safeNumber(body.presence_penalty),
+    maxTokens: safeNumber(body.max_tokens),
+  };
 
   if (control.mode === 'failure') {
     stats.failureResponses += 1;

@@ -76,8 +76,9 @@ async function initialize(): Promise<void> {
       icon.setAttribute('aria-hidden', 'true');
       entry.append(icon, document.createTextNode('读卡'));
       entry.addEventListener('click', () => { void view.open(); });
-      const worldButton = toolbar.querySelector('#world_button');
-      if (worldButton) worldButton.after(entry); else toolbar.append(entry);
+    }
+    if (toolbar && entry && toolbar.firstElementChild !== entry) {
+      toolbar.prepend(entry);
     }
     const key = currentCardKey();
     if (entry) entry.disabled = !key;

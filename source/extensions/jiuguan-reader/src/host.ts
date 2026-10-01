@@ -15,6 +15,12 @@ const WORLD_INFO_MODULE_URL = '/scripts/world-info.js';
 const CORE_SCRIPT_MODULE_URL = '/script.js';
 const OPENAI_SCRIPT_MODULE_URL = '/scripts/openai.js';
 const SETTINGS_SAVE_TIMEOUT_MS = 10_000;
+const MODEL_LIST_TIMEOUT_MS = 20_000;
+const MODEL_LIST_SETTING_NAMES = [
+  'custom_url', 'custom_include_headers', 'reverse_proxy', 'proxy_password', 'secret_id',
+  'azure_base_url', 'azure_deployment_name', 'azure_api_version', 'siliconflow_endpoint',
+  'minimax_endpoint', 'workers_ai_account_id', 'pollinations_endpoint',
+] as const;
 const CURRENT_CHAT_SETTING_MAP = [
   ['temp_openai', 'temperature'],
   ['freq_pen_openai', 'frequency_penalty'],
@@ -100,6 +106,7 @@ interface NativeContext {
   getOneCharacter?: (avatar: string) => Promise<void>;
   loadWorldInfo?: (name: string) => Promise<unknown>;
   getRequestHeaders?: () => HeadersInit;
+  substituteParams?: (value: string) => string;
   getChatCompletionModel?: () => string;
   ChatCompletionService?: {
     processRequest?: (
@@ -157,8 +164,9 @@ type GenerationSession =
     source: string;
     requestDefaults: Record<string, unknown>;
     identity: NativeCurrentConnectionSnapshot;
+    modelOverride?: string;
   }
-  | { mode: 'profile'; profileId: string; profile: NativeProfileSnapshot; proxyEndpoint?: string };
+  | { mode: 'profile'; profileId: string; profile: NativeProfileSnapshot; proxyEndpoint?: string; modelOverride?: string; samplingDefaults: Record<string, unknown> };
 
 interface WorldInfoState {
   world_info?: unknown;
@@ -290,15 +298,69 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       return getSupportedProfiles(getContext());
     },
 
-    describeConnection(connection) {
-      const context = getContext();
-      if (connection.mode === 'profile') {
-        const profile = getSupportedProfiles(context).find((item) => item.id === connection.profileId);
-        return profile?.name ?? '酒馆指定连接';
-      }
+    getConnectionInfo(connection) {
+      return getConnectionInfo(getContext(), connection);
+    },
 
-      const model = safeCurrentModel(context);
-      return model ? `酒馆当前连接（${model}）` : '酒馆当前连接';
+    async listModels(connection, signal) {
+      throwIfAborted(signal);
+      const abort = new AbortController();
+      const forwardAbort = (): void => abort.abort();
+      signal?.addEventListener('abort', forwardAbort, { once: true });
+      const timer = setTimeout(() => abort.abort(), MODEL_LIST_TIMEOUT_MS);
+      try {
+        const sessions = new WeakMap<AbortSignal, GenerationSession>();
+        const context = getContext();
+        const session = await getGenerationSession(sessions, context, connection, abort.signal, dependencies, true);
+        if (session.mode === 'profile' && session.profile.proxy && session.proxyEndpoint !== '') {
+          throw new ReaderHostSafeError('这条独立连接使用反向代理；请手动填写模型 ID，或使用酒馆当前 API 拉取列表。不会借用当前聊天的代理密码。');
+        }
+        const defaults = session.mode === 'current' ? session.requestDefaults : buildProfileOverride(session.profile, false);
+        const payload: Record<string, unknown> = {
+          chat_completion_source: session.mode === 'current' ? session.source : session.profile.source,
+        };
+        for (const key of MODEL_LIST_SETTING_NAMES) {
+          if (defaults[key] !== undefined) payload[key] = defaults[key];
+        }
+        if (payload.chat_completion_source === 'custom' && typeof payload.custom_include_headers === 'string') {
+          if (typeof context.substituteParams === 'function') {
+            payload.custom_include_headers = context.substituteParams(payload.custom_include_headers);
+          } else if (payload.custom_include_headers.includes('{{')) {
+            throw new ReaderHostSafeError('酒馆没有提供自定义请求头的宏替换能力；请手动填写模型 ID，没有发送未替换的请求头。');
+          }
+        }
+        const fetcher = dependencies.fetcher ?? globalThis.fetch.bind(globalThis);
+        const response = await raceWithAbort(fetcher('/api/backends/chat-completions/status', {
+          method: 'POST',
+          headers: context.getRequestHeaders?.() ?? {},
+          body: JSON.stringify(payload),
+          signal: abort.signal,
+          cache: 'no-cache',
+        }), abort.signal);
+        if (!response.ok) throw new ReaderHostSafeError(`拉取模型失败（HTTP ${response.status}）。请检查酒馆连接，也可以手动填写模型 ID。`);
+        const data = asRecord(await raceWithAbort(response.json(), abort.signal));
+        await getGenerationSession(sessions, getContext(), connection, abort.signal, dependencies, true);
+        const models = data && !data.error && Array.isArray(data.data)
+          ? [...new Set(data.data.map((item) => asRecord(item)?.id)
+            .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
+            .map((id) => id.trim()))].sort((left, right) => left.localeCompare(right))
+          : [];
+        if (!models.length) throw new ReaderHostSafeError('接口没有返回可选模型列表。可以手动填写模型 ID；不会自动换连接或模型。');
+        return models;
+      } catch (error) {
+        if (signal?.aborted) throw createAbortError();
+        if (abort.signal.aborted) throw new ReaderHostSafeError('拉取模型超时，请重试或手动填写模型 ID。');
+        if (error instanceof ReaderHostSafeError) throw error;
+        throw new ReaderHostSafeError('无法拉取模型列表，请检查酒馆连接或手动填写模型 ID。');
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', forwardAbort);
+      }
+    },
+
+    describeConnection(connection) {
+      const info = getConnectionInfo(getContext(), connection);
+      return info.model ? `${info.label}（${info.model}）` : info.label;
     },
 
     async generate(messages, settings, signal) {
@@ -308,6 +370,7 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
       const rawMessages = messages.map((message) => ({ role: message.role, content: message.content }));
       const useSystemPrompt = rawMessages.some((message) => message.role === 'system');
       const session = await getGenerationSession(generationSessions, context, settings.connection, signal, dependencies);
+      const generation = buildGenerationOverride(settings, session.mode === 'profile' ? session.samplingDefaults : {});
       throwIfAborted(signal);
       try {
         let request: Promise<unknown>;
@@ -333,7 +396,8 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
               includePreset: false,
               includeInstruct: false,
             },
-            buildProfileOverride(session.profile, useSystemPrompt),
+            { ...buildProfileOverride(session.profile, useSystemPrompt), ...generation,
+              ...(session.modelOverride ? { model: session.modelOverride } : {}) },
           );
         } else {
           const service = context.ChatCompletionService;
@@ -342,9 +406,10 @@ export function createReaderHost(dependencies: ReaderHostDependencies = {}): Rea
           }
           request = service.processRequest({
             ...session.requestDefaults,
+            ...generation,
             stream: false,
             messages: rawMessages,
-            model: session.model,
+            model: session.modelOverride ?? session.model,
             chat_completion_source: session.source,
             max_tokens: settings.maxOutputTokens,
             use_sysprompt: useSystemPrompt,
@@ -489,17 +554,20 @@ async function getGenerationSession(
   connection: ReaderConnection,
   signal: AbortSignal,
   dependencies: ReaderHostDependencies,
+  allowEmptyModel = false,
 ): Promise<GenerationSession> {
   const existing = sessions.get(signal);
+  const modelOverride = connection.model?.trim() || undefined;
   if (existing) {
     if (existing.mode !== connection.mode
-      || (existing.mode === 'profile' && existing.profileId !== connection.profileId)) {
+      || (existing.mode === 'profile' && existing.profileId !== connection.profileId)
+      || existing.modelOverride !== modelOverride) {
       throw new ReaderHostSafeError('读卡任务中的连接选择发生变化；为避免混用模型，读卡已停止。');
     }
     if (existing.mode === 'current') {
       let current: Extract<GenerationSession, { mode: 'current' }>;
       try {
-        current = createCurrentConnectionSession(context);
+        current = createCurrentConnectionSession(context, allowEmptyModel || Boolean(modelOverride));
       } catch {
         throw new ReaderHostSafeError('酒馆当前连接在本次读卡过程中发生变化或无法确认；为避免混用连接，读卡已停止。');
       }
@@ -529,6 +597,9 @@ async function getGenerationSession(
     if (!profile) {
       throw new ReaderHostSafeError('所选档案不可用或不是 Chat Completion 连接；本次没有切换到当前连接。');
     }
+    if (!allowEmptyModel && !profile.model?.trim() && !modelOverride) {
+      throw new ReaderHostSafeError('这条独立连接还没有模型；请在读卡设置中选择或手动填写模型 ID。');
+    }
     const proxyName = profile.proxy;
     const proxyEndpoint = proxyName
       ? await readProfileProxyEndpoint(proxyName, dependencies.getProfileProxyEndpoint)
@@ -536,9 +607,9 @@ async function getGenerationSession(
     if (proxyName && proxyEndpoint === undefined) {
       throw new ReaderHostSafeError('无法确认指定连接的代理地址；本次没有向模型发送资料。');
     }
-    session = { mode: 'profile', profileId: connection.profileId, profile, proxyEndpoint };
+    session = { mode: 'profile', profileId: connection.profileId, profile, proxyEndpoint, modelOverride, samplingDefaults: currentSamplingDefaults(context) };
   } else if (connection.mode === 'current') {
-    session = createCurrentConnectionSession(context);
+    session = { ...createCurrentConnectionSession(context, allowEmptyModel || Boolean(modelOverride)), modelOverride };
   } else {
     throw new ReaderHostSafeError('读卡连接模式无效；本次没有发送请求。');
   }
@@ -547,7 +618,7 @@ async function getGenerationSession(
   return session;
 }
 
-function createCurrentConnectionSession(context: NativeContext): Extract<GenerationSession, { mode: 'current' }> {
+function createCurrentConnectionSession(context: NativeContext, allowEmptyModel = false): Extract<GenerationSession, { mode: 'current' }> {
   if (context.mainApi !== 'openai') {
     throw new ReaderHostSafeError('读卡首版仅支持酒馆 Chat Completion 当前连接；本次没有改用其他接口。');
   }
@@ -556,7 +627,7 @@ function createCurrentConnectionSession(context: NativeContext): Extract<Generat
     ? settings.chat_completion_source.trim()
     : '';
   const model = safeCurrentModel(context);
-  if (!settings || !source || !model) {
+  if (!settings || !source || (!model && !allowEmptyModel)) {
     throw new ReaderHostSafeError('无法确认酒馆当前 Chat Completion 服务商和模型；本次没有发送请求。');
   }
 
@@ -683,6 +754,43 @@ function buildProfileOverride(profile: NativeProfileSnapshot, useSystemPrompt: b
     override.pollinations_endpoint = profile.apiUrl;
   }
   return override;
+}
+
+function getConnectionInfo(context: NativeContext, connection: ReaderConnection) {
+  if (connection.mode === 'profile') {
+    const profile = findChatCompletionProfile(context, connection.profileId);
+    const label = getSupportedProfiles(context).find((item) => item.id === connection.profileId)?.name ?? '酒馆指定连接';
+    return { label, source: profile?.source ?? '', model: connection.model?.trim() || profile?.model || '' };
+  }
+  return {
+    label: '酒馆当前连接',
+    source: optionalString(context.chatCompletionSettings?.chat_completion_source) ?? '',
+    model: connection.model?.trim() || safeCurrentModel(context),
+  };
+}
+
+function currentSamplingDefaults(context: NativeContext): Record<string, unknown> {
+  const native = context.chatCompletionSettings ?? {};
+  const generation = normalizeReaderSettings({ generation: {
+    temperature: native.temp_openai,
+    topP: native.top_p_openai,
+    frequencyPenalty: native.freq_pen_openai,
+    presencePenalty: native.pres_pen_openai,
+  } }).generation;
+  return {
+    temperature: generation.temperature, top_p: generation.topP,
+    frequency_penalty: generation.frequencyPenalty, presence_penalty: generation.presencePenalty,
+  };
+}
+
+function buildGenerationOverride(settings: ReaderSettings, inherited: Record<string, unknown>): Record<string, unknown> {
+  const generation = normalizeReaderSettings(settings).generation;
+  return generation.inherit ? inherited : {
+    temperature: generation.temperature,
+    top_p: generation.topP,
+    frequency_penalty: generation.frequencyPenalty,
+    presence_penalty: generation.presencePenalty,
+  };
 }
 
 function cloneRequestValue(value: unknown): unknown {
@@ -867,7 +975,7 @@ function sanitizeProviderText(value: string): string {
 function safeCurrentModel(context: NativeContext): string {
   try {
     const model = context.getChatCompletionModel?.();
-    return typeof model === 'string' ? model.trim().slice(0, 120) : '';
+    return typeof model === 'string' ? model.trim() : '';
   } catch {
     return '';
   }

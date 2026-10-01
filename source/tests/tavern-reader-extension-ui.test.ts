@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { defaultReaderSettings } from '../extensions/jiuguan-reader/src/settings.js';
 import { ReaderView } from '../extensions/jiuguan-reader/src/ui.js';
 import type { ExtensionUpdater, ExtensionUpdateState } from '../extensions/jiuguan-reader/src/updater.js';
+import type { ReaderConnection, ReaderHost, ReaderSettings } from '../extensions/jiuguan-reader/src/types.js';
 
 type UpdatePhase = ExtensionUpdateState['phase'];
 type SetUpdateState = (phase: UpdatePhase, message?: string) => void;
@@ -22,6 +24,44 @@ interface ReaderViewHarness {
   reloadAfterUpdate(feedback: HTMLElement): void;
 }
 
+interface ReaderSettingsViewHarness extends ReaderViewHarness {
+  host: ReaderHost;
+  settingsEditVersion: number;
+  form: FakeElement;
+  settingsPanel: FakeElement;
+  systemInput: FakeElement;
+  analysisInput: FakeElement;
+  connectionMode: FakeElement;
+  profileInput: FakeElement;
+  modelSelect: FakeElement;
+  modelInput: FakeElement;
+  modelSummary: FakeElement;
+  modelsStatus: FakeElement;
+  fetchModelsButton: FakeElement;
+  inheritGenerationInput: FakeElement;
+  temperatureInput: FakeElement;
+  topPInput: FakeElement;
+  frequencyInput: FakeElement;
+  presenceInput: FakeElement;
+  generationFields: FakeElement;
+  contextInput: FakeElement;
+  outputInput: FakeElement;
+  shortcutsInput: FakeElement;
+  settingsStatus: FakeElement;
+  availableModels: string[];
+  modelRequest: AbortController | null;
+  openSettings(): void;
+  fillSettings(settings: ReaderSettings): void;
+  fetchModels(): Promise<void>;
+  connectionChanged(): void;
+  refreshModelSummary(): void;
+  updateGenerationVisibility(): void;
+  markSettingsDirty(message?: string): void;
+  saveSettings(save: FakeElement): Promise<void>;
+  hasUnsavedInput(): boolean;
+  render(state: ControllerState): void;
+}
+
 interface FakeUpdater extends ExtensionUpdater {
   setState: SetUpdateState;
   updateCalls(): number;
@@ -31,6 +71,7 @@ class FakeElement {
   readonly children: FakeElement[] = [];
   readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Array<(event: Event) => void>>();
+  parentElement: FakeElement | null = null;
   className = '';
   textContent = '';
   hidden = false;
@@ -38,14 +79,35 @@ class FakeElement {
   title = '';
   type = '';
   value = '';
+  id = '';
+  htmlFor = '';
+  min = '';
+  max = '';
+  step = '';
+  required = false;
+  checked = false;
+  open = false;
+  rows = 0;
+  autocomplete = '';
+  dataset: Record<string, string> = {};
 
   constructor(readonly tagName: string, private readonly spies: UiSpies) {}
 
   append(...nodes: unknown[]): void {
     for (const node of nodes) {
-      if (node instanceof FakeElement) this.children.push(node);
+      if (node instanceof FakeElement) {
+        node.parentElement = this;
+        this.children.push(node);
+      }
       else if (typeof node === 'string') this.textContent += node;
     }
+  }
+
+  replaceChildren(...nodes: unknown[]): void {
+    this.children.forEach((child) => { child.parentElement = null; });
+    this.children.length = 0;
+    this.textContent = '';
+    this.append(...nodes);
   }
 
   setAttribute(name: string, value: string): void {
@@ -62,10 +124,42 @@ class FakeElement {
   }
 
   click(): void {
-    for (const listener of this.listeners.get('click') ?? []) listener({} as Event);
+    this.dispatch('click');
+  }
+
+  dispatch(type: string): void {
+    const event = { type, target: this, preventDefault() {} } as unknown as Event;
+    for (let current: FakeElement | null = this; current; current = current.parentElement) {
+      for (const listener of current.listeners.get(type) ?? []) listener(event);
+    }
+  }
+
+  closest(selector: string): FakeElement | null {
+    for (let current: FakeElement | null = this; current; current = current.parentElement) {
+      if (selector === 'label' && current.tagName === 'label') return current;
+    }
+    return null;
+  }
+
+  checkValidity(): boolean {
+    if (this.disabled) return true;
+    const value = this.value.trim();
+    if (this.required && !value) return false;
+    if (this.type !== 'number' || !value) return true;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return false;
+    if (this.min && number < Number(this.min)) return false;
+    if (this.max && number > Number(this.max)) return false;
+    if (this.step && this.step !== 'any') {
+      const step = Number(this.step);
+      const base = this.min ? Number(this.min) : 0;
+      if (step > 0 && Math.abs((number - base) / step - Math.round((number - base) / step)) > 1e-8) return false;
+    }
+    return true;
   }
 
   showModal(): void {
+    this.open = true;
     this.spies.showModalCalls += 1;
   }
 }
@@ -182,8 +276,379 @@ function emptySpies(): UiSpies {
   return { showModalCalls: 0, confirmCalls: 0, reloadCalls: 0 };
 }
 
+interface FakeReaderSettingsHost {
+  host: ReaderHost;
+  getSavedSettings(): ReaderSettings;
+  getSaveCalls(): number;
+}
+
+function createFakeReaderSettingsHost(
+  initialSettings = defaultReaderSettings(),
+  options: {
+    profiles?: Array<{ id: string; name: string }>;
+    listModels?: (connection: ReaderConnection, signal?: AbortSignal) => Promise<string[]>;
+    beforeSave?: (settings: ReaderSettings) => Promise<void>;
+  } = {},
+): FakeReaderSettingsHost {
+  let settings = initialSettings;
+  let saveCalls = 0;
+  const profiles = options.profiles ?? [
+    { id: 'profile-a', name: '虚构连接 A' },
+    { id: 'profile-b', name: '虚构连接 B' },
+  ];
+  const host = {
+    getSettings: () => settings,
+    async saveSettings(next: ReaderSettings) {
+      saveCalls += 1;
+      await options.beforeSave?.(next);
+      settings = next;
+    },
+    getProfiles: () => profiles,
+    getConnectionInfo(connection: ReaderConnection) {
+      const profile = profiles.find((item) => item.id === connection.profileId);
+      const label = connection.mode === 'profile' ? profile?.name ?? '独立连接' : '当前酒馆 API';
+      const baseModel = connection.mode === 'profile' ? 'profile-model' : 'chat-model';
+      return { label, source: connection.mode === 'profile' ? '虚构独立连接' : '虚构当前连接', model: connection.model ?? baseModel };
+    },
+    listModels: options.listModels ?? (async () => ['model-one', 'model-two']),
+  } as unknown as ReaderHost;
+  return {
+    host,
+    getSavedSettings: () => settings,
+    getSaveCalls: () => saveCalls,
+  };
+}
+
+function createReaderSettingsView(
+  spies: UiSpies,
+  settingsHost = createFakeReaderSettingsHost(),
+): { view: ReaderSettingsViewHarness; form: FakeElement } {
+  const view = Object.create(ReaderView.prototype) as ReaderSettingsViewHarness;
+  const controllerState: ControllerState = { loading: false, busy: false, unsaved: false };
+  const form = new FakeElement('form', spies);
+  const addField = (control: FakeElement): FakeElement => {
+    const label = new FakeElement('label', spies);
+    label.append(new FakeElement('span', spies), control);
+    form.append(label);
+    return label;
+  };
+  const systemInput = new FakeElement('textarea', spies);
+  const analysisInput = new FakeElement('textarea', spies);
+  const connectionMode = new FakeElement('select', spies);
+  const profileInput = new FakeElement('select', spies);
+  const modelSelect = new FakeElement('select', spies);
+  const modelInput = new FakeElement('input', spies);
+  const modelSummary = new FakeElement('div', spies);
+  const modelsStatus = new FakeElement('p', spies);
+  const fetchModelsButton = new FakeElement('button', spies);
+  const inheritGenerationInput = new FakeElement('input', spies);
+  const temperatureInput = new FakeElement('input', spies);
+  const topPInput = new FakeElement('input', spies);
+  const frequencyInput = new FakeElement('input', spies);
+  const presenceInput = new FakeElement('input', spies);
+  const generationFields = new FakeElement('div', spies);
+  const contextInput = new FakeElement('input', spies);
+  const outputInput = new FakeElement('input', spies);
+  const shortcutsInput = new FakeElement('textarea', spies);
+  const settingsStatus = new FakeElement('div', spies);
+  modelInput.type = 'text';
+  inheritGenerationInput.type = 'checkbox';
+  for (const [input, min, max] of [
+    [temperatureInput, '0', '2'],
+    [topPInput, '0', '1'],
+    [frequencyInput, '-2', '2'],
+    [presenceInput, '-2', '2'],
+  ] as const) {
+    input.type = 'number';
+    input.min = min;
+    input.max = max;
+    input.step = 'any';
+    input.required = true;
+  }
+  contextInput.type = 'number';
+  contextInput.min = '1';
+  contextInput.step = '1';
+  contextInput.required = true;
+  outputInput.type = 'number';
+  outputInput.min = '1';
+  outputInput.step = '1';
+  outputInput.required = true;
+  Object.assign(view, {
+    controller: { getState: () => controllerState },
+    updater: createFakeUpdater(),
+    host: settingsHost.host,
+    settingsDirty: false,
+    settingsEditVersion: 0,
+    questionInput: new FakeElement('textarea', spies),
+    questionDrafts: new Map<string, string>(),
+    updateRequestPending: false,
+    updateControlRenderers: new Set<() => void>(),
+    settingsPanel: new FakeElement('dialog', spies),
+    form,
+    systemInput,
+    analysisInput,
+    connectionMode,
+    profileInput,
+    modelSelect,
+    modelInput,
+    modelSummary,
+    modelsStatus,
+    fetchModelsButton,
+    inheritGenerationInput,
+    temperatureInput,
+    topPInput,
+    frequencyInput,
+    presenceInput,
+    generationFields,
+    contextInput,
+    outputInput,
+    shortcutsInput,
+    settingsStatus,
+    availableModels: [],
+    modelRequest: null,
+    render: () => {},
+  });
+
+  addField(systemInput);
+  addField(analysisInput);
+  addField(connectionMode);
+  addField(profileInput);
+  form.append(modelSummary);
+  addField(modelSelect);
+  addField(modelInput);
+  form.append(modelsStatus);
+  addField(inheritGenerationInput);
+  for (const input of [temperatureInput, topPInput, frequencyInput, presenceInput]) addField(input);
+  form.append(generationFields);
+  addField(contextInput);
+  addField(outputInput);
+  addField(shortcutsInput);
+  form.append(settingsStatus);
+
+  connectionMode.addEventListener('change', () => view.connectionChanged());
+  profileInput.addEventListener('change', () => view.connectionChanged());
+  modelSelect.addEventListener('change', () => view.refreshModelSummary());
+  modelInput.addEventListener('input', () => view.refreshModelSummary());
+  inheritGenerationInput.addEventListener('change', () => view.updateGenerationVisibility());
+  form.addEventListener('input', () => view.markSettingsDirty());
+  form.addEventListener('change', () => view.markSettingsDirty());
+  view.fillSettings(settingsHost.host.getSettings());
+  return { view, form };
+}
+
 const extensionIndexSource = readFileSync(new URL('../extensions/jiuguan-reader/src/index.ts', import.meta.url), 'utf8');
 const viewSource = readFileSync(new URL('../extensions/jiuguan-reader/src/ui.ts', import.meta.url), 'utf8');
+
+test('模型列表不自动选首项，保存后重开恢复所选模型和生成参数', async () => {
+  const spies = emptySpies();
+  const settingsHost = createFakeReaderSettingsHost();
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+
+    await view.fetchModels();
+    assert.equal(view.modelSelect.value, '', '拉取列表后仍跟随连接模型，不应自动挑第一项');
+    assert.deepEqual(view.availableModels, ['model-one', 'model-two']);
+
+    view.modelSelect.value = 'model:model-two';
+    view.modelSelect.dispatch('change');
+    view.inheritGenerationInput.checked = false;
+    view.inheritGenerationInput.dispatch('change');
+    view.temperatureInput.value = '0.31';
+    view.temperatureInput.dispatch('input');
+    view.topPInput.value = '0.82';
+    view.topPInput.dispatch('input');
+    view.frequencyInput.value = '-0.25';
+    view.frequencyInput.dispatch('input');
+    view.presenceInput.value = '0.4';
+    view.presenceInput.dispatch('input');
+    await view.saveSettings(new FakeElement('button', spies));
+
+    const saved = settingsHost.getSavedSettings();
+    assert.equal(saved.connection.model, 'model-two');
+    assert.deepEqual(saved.generation, {
+      inherit: false,
+      temperature: 0.31,
+      topP: 0.82,
+      frequencyPenalty: -0.25,
+      presencePenalty: 0.4,
+    });
+    assert.equal(view.settingsDirty, false);
+
+    view.settingsPanel.open = false;
+    view.openSettings();
+    assert.equal(view.modelSelect.value, 'model:model-two', '重新打开后仍应恢复保存的模型选择');
+    assert.equal(view.temperatureInput.value, '0.31');
+    assert.equal(view.topPInput.value, '0.82');
+    assert.equal(view.frequencyInput.value, '-0.25');
+    assert.equal(view.presenceInput.value, '0.4');
+    assert.equal(view.inheritGenerationInput.checked, false);
+  });
+});
+
+test('切换连接会取消旧模型请求，晚到结果不会覆盖新连接的列表', async () => {
+  const spies = emptySpies();
+  let resolveOld!: (models: string[]) => void;
+  let oldSignal: AbortSignal | undefined;
+  const settingsHost = createFakeReaderSettingsHost(defaultReaderSettings(), {
+    listModels(connection, signal) {
+      if (connection.mode === 'current') {
+        oldSignal = signal;
+        return new Promise((resolve) => { resolveOld = resolve; });
+      }
+      return Promise.resolve(['profile-b-model']);
+    },
+  });
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    const oldRequest = view.fetchModels();
+    assert.ok(oldSignal);
+
+    view.connectionMode.value = 'profile';
+    view.connectionMode.dispatch('change');
+    view.profileInput.value = 'profile-b';
+    view.profileInput.dispatch('change');
+    assert.equal(oldSignal.aborted, true, '更换连接时应取消旧请求');
+
+    await view.fetchModels();
+    assert.deepEqual(view.availableModels, ['profile-b-model']);
+    resolveOld(['stale-current-model']);
+    await oldRequest;
+
+    assert.deepEqual(view.availableModels, ['profile-b-model']);
+    assert.ok(!view.modelSelect.children.some((option) => option.value === 'model:stale-current-model'));
+    assert.match(view.modelsStatus.textContent, /已获取 1 个模型/u);
+  });
+});
+
+test('重新打开设置时取消待处理模型请求并清除旧列表状态', async () => {
+  const spies = emptySpies();
+  let resolveModels!: (models: string[]) => void;
+  let signal: AbortSignal | undefined;
+  const settingsHost = createFakeReaderSettingsHost(defaultReaderSettings(), {
+    listModels(_connection, nextSignal) {
+      signal = nextSignal;
+      return new Promise((resolve) => { resolveModels = resolve; });
+    },
+  });
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    const pending = view.fetchModels();
+    assert.ok(signal);
+    view.modelsStatus.textContent = '旧连接已获取 9 个模型';
+    view.modelsStatus.hidden = false;
+
+    view.openSettings();
+    assert.equal(signal.aborted, true);
+    assert.equal(view.modelsStatus.hidden, true);
+    assert.equal(view.modelsStatus.textContent, '');
+    assert.deepEqual(view.availableModels, []);
+
+    resolveModels(['late-model']);
+    await pending;
+    assert.equal(view.modelsStatus.hidden, true);
+    assert.equal(view.modelsStatus.textContent, '');
+    assert.deepEqual(view.availableModels, []);
+  });
+});
+
+test('继承参数时空字段回退到原保存值，同时保留有效的新数值', async () => {
+  const spies = emptySpies();
+  const initial = defaultReaderSettings();
+  initial.generation = { inherit: true, temperature: 0.8, topP: 0.6, frequencyPenalty: 0.25, presencePenalty: -0.25 };
+  const settingsHost = createFakeReaderSettingsHost(initial);
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    view.inheritGenerationInput.checked = false;
+    view.inheritGenerationInput.dispatch('change');
+    view.temperatureInput.value = '0.42';
+    view.temperatureInput.dispatch('input');
+    view.topPInput.value = '';
+    view.topPInput.dispatch('input');
+    view.frequencyInput.value = '';
+    view.frequencyInput.dispatch('input');
+    view.presenceInput.value = '';
+    view.presenceInput.dispatch('input');
+    view.inheritGenerationInput.checked = true;
+    view.inheritGenerationInput.dispatch('change');
+
+    await view.saveSettings(new FakeElement('button', spies));
+    assert.deepEqual(settingsHost.getSavedSettings().generation, {
+      inherit: true,
+      temperature: 0.42,
+      topP: 0.6,
+      frequencyPenalty: 0.25,
+      presencePenalty: -0.25,
+    });
+    assert.deepEqual([
+      view.temperatureInput.value,
+      view.topPInput.value,
+      view.frequencyInput.value,
+      view.presenceInput.value,
+    ], ['0.42', '0.6', '0.25', '-0.25'], '保存后隐藏参数字段也应显示实际保留值');
+  });
+});
+
+test('空手填模型和越界生成参数都拒绝保存', async () => {
+  const spies = emptySpies();
+  const settingsHost = createFakeReaderSettingsHost();
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    const save = new FakeElement('button', spies);
+    view.modelSelect.value = 'manual';
+    view.modelSelect.dispatch('change');
+    view.modelInput.value = '';
+    await view.saveSettings(save);
+    assert.match(view.settingsStatus.textContent, /请填写模型 ID/u);
+    assert.equal(settingsHost.getSaveCalls(), 0);
+
+    view.modelInput.value = 'manual-model-id';
+    view.modelInput.dispatch('input');
+    view.inheritGenerationInput.checked = false;
+    view.inheritGenerationInput.dispatch('change');
+    for (const [input, invalidValue] of [
+      [view.temperatureInput, '2.1'],
+      [view.topPInput, '1.1'],
+      [view.frequencyInput, '-2.1'],
+      [view.presenceInput, '2.1'],
+    ] as const) {
+      input.value = invalidValue;
+      input.dispatch('input');
+      await view.saveSettings(save);
+      assert.match(view.settingsStatus.textContent, /温度请填/u);
+      assert.equal(settingsHost.getSaveCalls(), 0, `${input.id || input.type} 越界时不应保存`);
+      input.value = input === view.temperatureInput ? '0.7'
+        : input === view.topPInput ? '1'
+          : '0';
+    }
+  });
+});
+
+test('保存期间继续编辑会保留未保存标记与输入，避免被旧保存结果清掉', async () => {
+  const spies = emptySpies();
+  let finishSave!: () => void;
+  const delayedSave = new Promise<void>((resolve) => { finishSave = resolve; });
+  const settingsHost = createFakeReaderSettingsHost(defaultReaderSettings(), { beforeSave: () => delayedSave });
+  await withFakeBrowser(spies, async () => {
+    const { view } = createReaderSettingsView(spies, settingsHost);
+    view.analysisInput.value = '保存快照中的提示词';
+    view.analysisInput.dispatch('input');
+    const save = new FakeElement('button', spies);
+    const saving = view.saveSettings(save);
+    assert.equal(save.disabled, true);
+
+    view.analysisInput.value = '保存期间新输入的提示词';
+    view.analysisInput.dispatch('input');
+    finishSave();
+    await saving;
+
+    assert.equal(settingsHost.getSavedSettings().analysisPrompt, '保存快照中的提示词');
+    assert.equal(view.analysisInput.value, '保存期间新输入的提示词');
+    assert.equal(view.settingsDirty, true);
+    assert.equal(view.hasUnsavedInput(), true);
+    assert.match(view.settingsStatus.textContent, /保存期间又有新修改/u);
+    assert.equal(save.disabled, false);
+  });
+});
 
 test('更新控件挂在酒馆扩展抽屉入口，不混入读卡设置表单', () => {
   const extensionSettingsMount = extensionIndexSource.match(

@@ -22,6 +22,7 @@ export function defaultReaderSettings(): ReaderSettings {
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     analysisPrompt: DEFAULT_ANALYSIS_PROMPT,
     connection: { mode: 'current', profileId: '' },
+    generation: { inherit: true, temperature: 0.7, topP: 1, frequencyPenalty: 0, presencePenalty: 0 },
     contextChars: 24000,
     maxOutputTokens: 4096,
     quickQuestions: [...DEFAULT_QUICK_QUESTIONS],
@@ -32,12 +33,22 @@ export function normalizeReaderSettings(value: unknown): ReaderSettings {
   const defaults = defaultReaderSettings();
   const input = asRecord(value);
   const connection = asRecord(input.connection);
+  const generation = asRecord(input.generation);
+  const model = typeof connection.model === 'string' ? connection.model.trim() : '';
   return {
     systemPrompt: typeof input.systemPrompt === 'string' ? input.systemPrompt : defaults.systemPrompt,
     analysisPrompt: typeof input.analysisPrompt === 'string' ? input.analysisPrompt : defaults.analysisPrompt,
     connection: {
       mode: connection.mode === 'profile' ? 'profile' : 'current',
       profileId: typeof connection.profileId === 'string' ? connection.profileId : '',
+      ...(model ? { model } : {}),
+    },
+    generation: {
+      inherit: generation.inherit !== false,
+      temperature: finiteNumber(generation.temperature, 0, 2, defaults.generation.temperature),
+      topP: finiteNumber(generation.topP, 0, 1, defaults.generation.topP),
+      frequencyPenalty: finiteNumber(generation.frequencyPenalty, -2, 2, defaults.generation.frequencyPenalty),
+      presencePenalty: finiteNumber(generation.presencePenalty, -2, 2, defaults.generation.presencePenalty),
     },
     contextChars: positiveInteger(input.contextChars, defaults.contextChars),
     maxOutputTokens: positiveInteger(input.maxOutputTokens, defaults.maxOutputTokens),
@@ -49,6 +60,10 @@ export function normalizeReaderSettings(value: unknown): ReaderSettings {
 
 function positiveInteger(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function finiteNumber(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : fallback;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

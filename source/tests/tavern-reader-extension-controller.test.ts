@@ -32,6 +32,8 @@ function setup(
     getSettings: defaultReaderSettings,
     saveSettings: async () => {},
     getProfiles: () => [],
+    getConnectionInfo: () => ({ label: '假连接', source: 'custom', model: '假模型' }),
+    listModels: async () => ['假模型'],
     describeConnection: () => '假模型',
     generate: async () => { generationCount += 1; return '新解读 [S1]'; },
     store: {
