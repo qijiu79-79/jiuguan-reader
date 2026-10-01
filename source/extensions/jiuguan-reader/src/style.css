@@ -67,6 +67,7 @@
 .jgr-extension-settings { padding: 8px 0; }
 .jgr-extension-settings summary { font-weight: 600; cursor: pointer; }
 .jgr-update-controls { min-width: 0; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--SmartThemeBorderColor, #5b5b65); overflow-wrap: anywhere; }
+.jgr-update-controls [hidden] { display: none !important; }
 .jgr-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; margin: 8px 0; }
 .jgr-update-status, .jgr-update-warning { min-width: 0; margin: 8px 0; overflow-wrap: anywhere; }
 .jgr-update-warning { color: #ffcf97; }
