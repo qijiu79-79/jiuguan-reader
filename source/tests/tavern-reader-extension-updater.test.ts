@@ -42,6 +42,29 @@ test('更新界面的版本与安装 manifest 一致', () => {
   assert.equal(manifest.homePage, REPOSITORY);
 });
 
+test('只检查时发现更新但不下载、不刷新或调用 AI', async () => {
+  const { updater, requests } = fixture();
+  const phases: ExtensionUpdateState['phase'][] = [];
+  updater.subscribe((state) => phases.push(state.phase));
+  assert.equal(requests.length, 0, '打开或订阅不能自动联网');
+  await updater.check();
+  assert.deepEqual(phases, ['idle', 'checking', 'available']);
+  assert.deepEqual(requests.map((request) => request.endpoint), ['/api/extensions/discover', '/api/extensions/version']);
+  assert.equal(requests[0].options.method, 'GET');
+  assert.equal(requests[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(String(requests[1].options.body)), { extensionName: 'jiuguan-reader', global: false });
+  assert.match(updater.getState().message, /没有下载或刷新/u);
+  assert.ok(requests.every((request) => request.endpoint !== '/api/extensions/update'));
+});
+
+test('只检查时识别最新版本，不发起下载请求', async () => {
+  const { updater, requests } = fixture({ version: { isUpToDate: true } });
+  await updater.check();
+  assert.equal(updater.getState().phase, 'current');
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((request) => request.endpoint !== '/api/extensions/update'));
+});
+
 for (const type of ['local', 'global'] as const) {
   test(`${type} 安装通过酒馆接口检查来源并更新，不碰卡片或设置`, async () => {
     const { updater, requests } = fixture({ type });
@@ -61,7 +84,7 @@ for (const type of ['local', 'global'] as const) {
       assert.equal(new Headers(request.options.headers).get('X-CSRF-Token'), 'fake-csrf-for-tests');
       assert.ok(request.options.signal);
     }
-    assert.match(updater.getState().message, /先保存.*再刷新/u);
+    assert.match(updater.getState().message, /安全时机自动刷新/u);
   });
 }
 
@@ -72,14 +95,29 @@ test('最新版本不发送更新写请求', async () => {
   assert.equal(requests.length, 2);
 });
 
-test('已下载但未刷新时再次检查仍提醒应用更新', async () => {
+test('已下载但未刷新时再次检查仍提醒应用更新，且不会重复下载', async () => {
   const version = { isUpToDate: false };
   const { updater, requests } = fixture({ version });
   await updater.update();
   version.isUpToDate = true;
-  await updater.update();
+  await updater.check();
   assert.equal(updater.getState().phase, 'updated');
   assert.match(updater.getState().message, /尚未应用/u);
+  assert.equal(requests.filter((request) => request.endpoint === '/api/extensions/update').length, 1);
+});
+
+test('先检查再下载时保留检查时的 commit 基线，后续检查提示刷新', async () => {
+  const version = { isUpToDate: false, currentCommitHash: COMMIT };
+  const { updater, requests } = fixture({ version });
+  await updater.check();
+  assert.equal(updater.getState().phase, 'available');
+  await updater.update();
+  assert.equal(updater.getState().phase, 'updated');
+  version.currentCommitHash = 'b'.repeat(40);
+  version.isUpToDate = true;
+  await updater.check();
+  assert.equal(updater.getState().phase, 'updated');
+  assert.match(updater.getState().message, /当前页面仍运行旧版本/u);
   assert.equal(requests.filter((request) => request.endpoint === '/api/extensions/update').length, 1);
 });
 
@@ -87,6 +125,54 @@ test('并发点击只启动一个检查和更新任务', async () => {
   const { updater, requests } = fixture();
   await Promise.all([updater.update(), updater.update(), updater.update()]);
   assert.equal(requests.length, 3);
+  assert.equal(updater.getState().phase, 'updated');
+});
+
+test('并发只检查调用共享同一个请求', async () => {
+  const { updater, requests } = fixture();
+  await Promise.all([updater.check(), updater.check(), updater.check()]);
+  assert.equal(requests.length, 2);
+  assert.equal(updater.getState().phase, 'available');
+});
+
+test('检查状态监听器同步重入时仍只运行一份检查', async () => {
+  const { updater, requests } = fixture();
+  let nestedCheck: Promise<void> | undefined;
+  updater.subscribe((state) => {
+    if (state.phase === 'checking' && !nestedCheck) nestedCheck = updater.check();
+  });
+  await updater.check();
+  await nestedCheck;
+  assert.equal(requests.length, 2);
+});
+
+test('下载按钮在检查进行中点击时排队执行，不与检查并发', async () => {
+  const { fetcher: baseFetcher, requests } = fixture();
+  let release!: () => void;
+  let markStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const updater = new ReaderUpdater({
+    getHeaders: () => ({ 'X-CSRF-Token': 'fake-csrf-for-tests' }),
+    moduleUrl: MODULE_URL,
+    fetcher: (async (input, init) => {
+      if (String(input) === '/api/extensions/discover' && requests.length === 0) {
+        markStarted();
+        await gate;
+      }
+      return baseFetcher(input, init);
+    }) as typeof fetch,
+  });
+  const checking = updater.check();
+  await started;
+  const updating = updater.update();
+  release();
+  await Promise.all([checking, updating]);
+  assert.deepEqual(requests.map((request) => request.endpoint), [
+    '/api/extensions/discover', '/api/extensions/version',
+    '/api/extensions/discover', '/api/extensions/version', '/api/extensions/update',
+  ]);
+  assert.equal(requests.filter((request) => request.endpoint === '/api/extensions/update').length, 1);
   assert.equal(updater.getState().phase, 'updated');
 });
 
@@ -103,6 +189,15 @@ test('没有 Git 的 ZIP 安装明确提示改用仓库，而非误报最新', a
   assert.equal(updater.getState().phase, 'error');
   assert.match(updater.getState().message, /ZIP/u);
   assert.equal(requests.length, 2);
+});
+
+test('只检查遇到 ZIP 安装时给出来源提示且不下载', async () => {
+  const { updater, requests } = fixture({ version: { currentBranchName: '', currentCommitHash: '', remoteUrl: '', isUpToDate: true } });
+  await updater.check();
+  assert.equal(updater.getState().phase, 'error');
+  assert.match(updater.getState().message, /ZIP/u);
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((request) => request.endpoint !== '/api/extensions/update'));
 });
 
 for (const remoteUrl of [
@@ -167,6 +262,15 @@ test('检查期间权限或网络失败不会发起更新', async () => {
   assert.equal(requests.length, 2);
 });
 
+test('只检查期间权限失败显示酒馆错误且不发起更新', async () => {
+  const { updater, requests } = fixture({ failure: { endpoint: '/api/extensions/version', status: 403 } });
+  await updater.check();
+  assert.equal(updater.getState().phase, 'error');
+  assert.match(updater.getState().message, /管理员/u);
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((request) => request.endpoint !== '/api/extensions/update'));
+});
+
 test('无法解析自己的安装路径时不联网', async () => {
   const { updater, requests } = fixture({ moduleUrl: 'file:///tmp/private-file.ts' });
   await updater.update();
@@ -202,7 +306,7 @@ test('订阅解除后不再通知', async () => {
   assert.equal(calls, 1);
 });
 
-test('下载超时后只复查、不重复拉取；后台已完成时显示待刷新', async () => {
+test('下载超时后只检查、不重复拉取；后台已完成时显示待刷新', async () => {
   const version = { isUpToDate: false, currentCommitHash: COMMIT };
   const { fetcher: healthyFetcher, requests } = fixture({ version });
   let writeRequests = 0;
@@ -217,13 +321,13 @@ test('下载超时后只复查、不重复拉取；后台已完成时显示待�
   await updater.update();
   assert.equal(updater.getState().phase, 'error');
   assert.match(updater.getState().message, /超时/u);
-  await updater.update();
+  await updater.check();
   assert.equal(writeRequests, 1, '超时不能被当作服务器取消，不再次发起 pull');
   assert.equal(updater.getState().phase, 'error');
   assert.match(updater.getState().message, /只核对状态/u);
   version.currentCommitHash = 'b'.repeat(40);
   version.isUpToDate = true;
-  await updater.update();
+  await updater.check();
   assert.equal(updater.getState().phase, 'updated');
   assert.match(updater.getState().message, /尚未应用/u);
   assert.equal(writeRequests, 1);

@@ -4,13 +4,14 @@ export const READER_EXTENSION_VERSION = manifest.version;
 export const READER_EXTENSION_REPOSITORY = 'https://github.com/qijiu79-79/jiuguan-reader';
 
 export interface ExtensionUpdateState {
-  phase: 'idle' | 'checking' | 'updating' | 'current' | 'updated' | 'error';
+  phase: 'idle' | 'checking' | 'available' | 'updating' | 'current' | 'updated' | 'error';
   message: string;
 }
 
 export interface ExtensionUpdater {
   getState(): ExtensionUpdateState;
   subscribe(listener: (state: ExtensionUpdateState) => void): () => void;
+  check(): Promise<void>;
   update(): Promise<void>;
 }
 
@@ -26,15 +27,22 @@ interface UpdateTarget {
   global: boolean;
 }
 
+interface VersionInfo {
+  target: UpdateTarget;
+  currentBranchName: string;
+  currentCommitHash: string;
+  isUpToDate: boolean;
+}
+
 class UpdateError extends Error {
   constructor(message: string, readonly responseReceived = false) { super(message); }
 }
 
 /** Update only this installed extension through the authenticated Tavern API. */
 export class ReaderUpdater implements ExtensionUpdater {
-  private state: ExtensionUpdateState = { phase: 'idle', message: '手动检查并更新，不会自动刷新或调用 AI。' };
+  private state: ExtensionUpdateState = { phase: 'idle', message: '检查不会下载更新；下载完成后会在安全时机自动刷新，不会调用 AI。' };
   private readonly listeners = new Set<(state: ExtensionUpdateState) => void>();
-  private running: Promise<void> | null = null;
+  private running: { kind: 'check' | 'update'; promise: Promise<void> } | null = null;
   private pendingReload = false;
   private checkedCommit: string | null = null;
   private unresolvedWrite = false;
@@ -52,43 +60,63 @@ export class ReaderUpdater implements ExtensionUpdater {
     return () => { this.listeners.delete(listener); };
   }
 
+  async check(): Promise<void> {
+    if (this.running) return this.running.promise;
+    return this.start('check', () => this.performCheck());
+  }
+
   async update(): Promise<void> {
-    if (this.running) return this.running;
-    this.running = this.performUpdate();
+    const active = this.running;
+    if (active?.kind === 'update') return active.promise;
+    if (active?.kind === 'check') {
+      await active.promise;
+      return this.update();
+    }
+    return this.start('update', () => this.performUpdate());
+  }
+
+  private start(kind: 'check' | 'update', operation: () => Promise<void>): Promise<void> {
+    const promise = Promise.resolve().then(operation).finally(() => {
+      if (this.running?.promise === promise) this.running = null;
+    });
+    this.running = { kind, promise };
+    return promise;
+  }
+
+  private async performCheck(): Promise<void> {
     try {
-      await this.running;
-    } finally {
-      this.running = null;
+      this.patch('checking', '正在检查安装来源和更新；不会下载、刷新或调用 AI。');
+      const version = await this.readVersionInfo();
+      if (this.observeCommit(version.currentCommitHash) || this.pendingReload) {
+        this.patch('updated', '已确认安装文件发生更新；当前页面仍运行旧版本，尚未应用更新。页面会在安全时机自动刷新；如酒馆还有未保存的输入，刷新会暂缓。');
+        return;
+      }
+      if (this.unresolvedWrite) {
+        throw new UpdateError('上次下载结果暂不确定，服务器可能仍在处理。本次只核对状态，不会重复下载；请稍后重新检查。若持续无变化，请让管理员检查服务器日志。');
+      }
+      if (version.isUpToDate) {
+        this.patch('current', '已经是当前安装分支的最新版本；已有解读和设置没有改动。本次仅检查，没有下载或刷新。');
+        return;
+      }
+      this.patch('available', '检测到可用更新。这里只检查了状态，没有下载或刷新；如需更新，请点击“一键更新”。已有解读和设置未改动。');
+    } catch (error) {
+      this.patch('error', error instanceof UpdateError ? error.message
+        : '未能检查更新，请检查网络或酒馆服务器日志后重试。已有解读和设置未改动。');
     }
   }
 
   private async performUpdate(): Promise<void> {
     try {
       this.patch('checking', '正在检查安装来源和更新；没有调用 AI。');
-      const target = await this.findTarget();
-      const version = record(await this.request('/api/extensions/version', target));
-      if (!version) throw new UpdateError('酒馆返回的版本信息不完整；本次没有下载更新。');
-      if (!version.remoteUrl && !version.currentCommitHash) {
-        throw new UpdateError('当前是手动 ZIP 安装，不能一键更新。请保留用户数据，改用公开仓库地址从酒馆“安装扩展”安装。');
-      }
-      if (!isReaderRepository(version.remoteUrl)) {
-        throw new UpdateError('安装来源不是酒馆读卡的发布仓库；本次没有更新，请先核对安装地址。');
-      }
-      if (typeof version.isUpToDate !== 'boolean' || typeof version.currentBranchName !== 'string'
-        || !version.currentBranchName.trim() || !isCommitHash(version.currentCommitHash)) {
-        throw new UpdateError('酒馆返回的版本信息不完整；本次没有下载更新。');
-      }
-      if (!this.checkedCommit) this.checkedCommit = String(version.currentCommitHash);
-      if (version.currentCommitHash !== this.checkedCommit) {
-        this.pendingReload = true;
-        this.unresolvedWrite = false;
-        this.patch('updated', '已确认安装文件发生更新，当前页面尚未应用。请先保存酒馆中其他未保存的输入，再刷新页面。');
+      const version = await this.readVersionInfo();
+      if (this.observeCommit(version.currentCommitHash)) {
+        this.patch('updated', '已确认安装文件发生更新；当前页面仍运行旧版本，尚未应用更新。页面会在安全时机自动刷新；如酒馆还有未保存的输入，刷新会暂缓。');
         return;
       }
       if (version.isUpToDate) {
         this.unresolvedWrite = false;
         this.patch(this.pendingReload ? 'updated' : 'current', this.pendingReload
-          ? '更新已下载，当前页面尚未应用。请先保存酒馆中其他未保存的输入，再刷新页面。'
+          ? '更新已下载，当前页面尚未应用；页面会在安全时机自动刷新。如酒馆还有未保存的输入，刷新会暂缓。'
           : '已经是当前安装分支的最新版本；已有解读和设置没有改动。');
         return;
       }
@@ -96,11 +124,11 @@ export class ReaderUpdater implements ExtensionUpdater {
         throw new UpdateError('上次下载结果暂不确定，服务器可能仍在处理。当前只核对状态，不会重复下载；请稍后重新检查。若持续无变化，请让管理员检查服务器日志。');
       }
 
-      this.patch('updating', '正在通过酒馆下载更新；完成后由你决定何时刷新。');
+      this.patch('updating', '正在通过酒馆下载更新；下载完成后会在安全时机自动刷新。');
       this.unresolvedWrite = true;
       let result: Record<string, unknown> | null;
       try {
-        result = record(await this.request('/api/extensions/update', target));
+        result = record(await this.request('/api/extensions/update', version.target));
       } catch (error) {
         // A finished HTTP error allows retrying. A disconnected or timed-out
         // browser request does not prove that Tavern stopped its Git operation.
@@ -115,11 +143,47 @@ export class ReaderUpdater implements ExtensionUpdater {
       // between the check and pull. This page still runs its original code.
       this.unresolvedWrite = false;
       this.pendingReload = true;
-      this.patch('updated', `更新已下载（${result.shortCommitHash}）。请先保存酒馆中其他未保存的输入，再刷新页面应用更新。`);
+      this.patch('updated', `更新已下载（${result.shortCommitHash}）；页面会在安全时机自动刷新。如酒馆还有未保存的输入，刷新会暂缓。`);
     } catch (error) {
       this.patch('error', error instanceof UpdateError ? error.message
         : '未能完成更新，请检查网络或酒馆服务器日志后重试。已有解读和设置未改动。');
     }
+  }
+
+  private async readVersionInfo(): Promise<VersionInfo> {
+    const target = await this.findTarget();
+    const version = record(await this.request('/api/extensions/version', target));
+    if (!version) throw new UpdateError('酒馆返回的版本信息不完整；本次没有下载更新。');
+    if (!version.remoteUrl && !version.currentCommitHash) {
+      throw new UpdateError('当前是手动 ZIP 安装，不能一键更新。请保留用户数据，改用公开仓库地址从酒馆“安装扩展”安装。');
+    }
+    if (!isReaderRepository(version.remoteUrl)) {
+      throw new UpdateError('安装来源不是酒馆读卡的发布仓库；本次没有更新，请先核对安装地址。');
+    }
+    if (typeof version.isUpToDate !== 'boolean' || typeof version.currentBranchName !== 'string'
+      || !version.currentBranchName.trim() || !isCommitHash(version.currentCommitHash)) {
+      throw new UpdateError('酒馆返回的版本信息不完整；本次没有下载更新。');
+    }
+    return {
+      target,
+      currentBranchName: version.currentBranchName,
+      currentCommitHash: version.currentCommitHash,
+      isUpToDate: version.isUpToDate,
+    };
+  }
+
+  private observeCommit(currentCommitHash: string): boolean {
+    // Establish the page's installed-code baseline before any update write.
+    // A later check can then tell that Tavern replaced files while this page
+    // is still running the previous code.
+    if (this.checkedCommit === null) {
+      this.checkedCommit = currentCommitHash;
+      return false;
+    }
+    if (currentCommitHash === this.checkedCommit) return false;
+    this.pendingReload = true;
+    this.unresolvedWrite = false;
+    return true;
   }
 
   private async findTarget(): Promise<UpdateTarget> {
@@ -177,7 +241,7 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function isCommitHash(value: unknown): boolean {
+function isCommitHash(value: unknown): value is string {
   return typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(value);
 }
 

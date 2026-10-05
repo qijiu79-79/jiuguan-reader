@@ -14,6 +14,13 @@ export interface ReaderState {
   error: string;
 }
 
+export interface ReaderJobResult {
+  kind: 'read' | 'question';
+  characterKey: string;
+  characterName: string;
+  outcome: 'saved' | 'unsaved' | 'failed';
+}
+
 interface ControllerDependencies {
   buildDocument?: typeof buildReadingDocument;
   analyze?: typeof analyzeDocument;
@@ -29,6 +36,7 @@ export class ReaderController {
     unsaved: false, status: '', error: '',
   };
   private listeners = new Set<(state: ReaderState) => void>();
+  private jobListeners = new Set<(result: ReaderJobResult) => void>();
   private loadVersion = 0;
   private loadAbort: AbortController | null = null;
   private jobAbort: AbortController | null = null;
@@ -54,15 +62,21 @@ export class ReaderController {
     return () => { this.listeners.delete(listener); };
   }
 
+  subscribeJobs(listener: (result: ReaderJobResult) => void): () => void {
+    this.jobListeners.add(listener);
+    return () => { this.jobListeners.delete(listener); };
+  }
+
   async loadCurrent(): Promise<void> {
+    // Closing/reopening the view or changing the host's current character is
+    // not cancellation. Keep the active card snapshot until its job is saved.
+    if (this.state.busy) return;
     if (this.state.unsaved) {
       this.patch({ error: '还有未保存的解读或回答，请先点“保存”，再切换读卡对象。' });
       return;
     }
     const version = ++this.loadVersion;
     this.loadAbort?.abort();
-    this.jobAbort?.abort();
-    this.jobAbort = null;
     const abort = new AbortController();
     this.loadAbort = abort;
     const previouslyDisplayed = this.state.record;
@@ -107,7 +121,7 @@ export class ReaderController {
       this.patch({ error: '请先保存当前结果，再重新解读；未保存的内容不会被覆盖。' });
       return;
     }
-    await this.run(async (signal, onProgress) => {
+    await this.run('read', document, async (signal, onProgress) => {
       const settings = structuredClone(this.host.getSettings());
       const model = this.host.describeConnection(settings.connection);
       const result = await this.analyze(document, settings, this.host.generate.bind(this.host), signal, onProgress);
@@ -144,7 +158,7 @@ export class ReaderController {
       this.patch({ error: '卡片或关联世界书已变化。旧解读仍保留，请重新解读后再追问当前设定。' });
       return;
     }
-    await this.run(async (signal, onProgress) => {
+    await this.run('question', document, async (signal, onProgress) => {
       const settings = structuredClone(this.host.getSettings());
       const model = this.host.describeConnection(settings.connection);
       const result = await this.askReading(document, saved, question.trim(), settings, this.host.generate.bind(this.host), signal, onProgress);
@@ -175,10 +189,12 @@ export class ReaderController {
     }
   }
 
-  private async run(operation: (signal: AbortSignal, onProgress: (progress: ReadingProgress) => void) => Promise<SavedReading>): Promise<void> {
+  private async run(kind: ReaderJobResult['kind'], document: ReadingDocument,
+    operation: (signal: AbortSignal, onProgress: (progress: ReadingProgress) => void) => Promise<SavedReading>): Promise<void> {
     const abort = new AbortController();
     this.jobAbort = abort;
     const version = this.loadVersion;
+    let outcome: ReaderJobResult['outcome'] | null = null;
     this.patch({ busy: true, progress: null, error: '', status: '正在解读，完成后自动保存；之前的结果仍保留。' });
     try {
       const record = await operation(abort.signal, (progress) => {
@@ -189,19 +205,26 @@ export class ReaderController {
       this.patch({ record, progress: null, unsaved: true, status: '生成完成，正在保存…' });
       try {
         await this.host.store.save(record);
+        outcome = 'saved';
         if (version === this.loadVersion) this.patch({ unsaved: false, status: '已自动保存，下次打开这张卡可以直接查看。' });
       } catch (error) {
+        outcome = 'unsaved';
         if (version === this.loadVersion) this.patch({ error: `保存失败：${errorMessage(error)}。结果没有丢失，请点“保存”重试。`, status: '尚未保存' });
       }
     } catch (error) {
+      if (!abort.signal.aborted) outcome = 'failed';
       if (version === this.loadVersion) {
         this.patch(abort.signal.aborted
           ? { progress: null, status: '已停止；之前保存的解读和回答没有改动。', error: '' }
           : { progress: null, status: '生成失败；之前保存的内容没有改动。', error: errorMessage(error) });
       }
     } finally {
-      if (version === this.loadVersion) this.patch({ busy: false, progress: null });
       if (this.jobAbort === abort) this.jobAbort = null;
+      if (version === this.loadVersion) this.patch({ busy: false, progress: null });
+      if (outcome) {
+        const result = { kind, characterKey: document.characterKey, characterName: document.characterName, outcome };
+        this.jobListeners.forEach((listener) => listener(result));
+      }
     }
   }
 

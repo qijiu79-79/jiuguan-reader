@@ -32,6 +32,20 @@ export interface ResultVariant {
   id: string; content: string; createdAt: string; model: string;
   baseUrl?: string; systemPrompt?: string; taskPrompt?: string;
 }
+export interface TranslationRequestLog {
+  id: string; materialId: string; itemId: string; fieldLabel: string;
+  source: string; sourceTruncated?: boolean;
+  model: string; protocol: ProviderProtocol; stream: boolean; maxOutputTokens: number;
+  startedAt: string; finishedAt?: string; chunkIndex: number; chunkCount: number;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string; truncated?: boolean }>;
+  response?: string; responseTruncated?: boolean; error?: string;
+  itemIds?: string[];
+  purpose?: 'translation' | 'glossary' | 'repair';
+  firstTextAt?: string; generatedAt?: string; savedAt?: string;
+  finishReason?: string;
+  usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number };
+}
 /** systemPrompt is retained only to import settings/presets from older versions. */
 export interface PromptPreset { id: string; name: string; systemPrompt: string; translationPrompt: string }
 export interface TavernSettings {
@@ -52,11 +66,20 @@ export interface TranslationItem {
   status: 'pending' | 'running' | 'done' | 'error';
   translated: string; approved: boolean; error?: string; warning?: string;
   variants?: ResultVariant[]; activeVariantId?: string;
+  /** Transient display only; never an adopted or exported draft. */
+  preview?: string;
+}
+export interface TranslationProgress {
+  phase: 'preparing' | 'waiting' | 'generating' | 'checking';
+  activeRequests: number; requests: number; totalItems: number; completedItems: number;
+  startedAt: string; firstTextAt?: string;
 }
 export interface TranslationState {
   materialId: string; status: 'idle' | 'running' | 'paused' | 'done' | 'error';
   items: TranslationItem[]; glossary: GlossaryTerm[]; error?: string;
   snapshot?: unknown; updatedAt: string;
+  /** Runtime-only progress, omitted from persisted task records. */
+  progress?: TranslationProgress;
 }
 export interface ReaderSource { id: string; label: string; text: string; path?: JsonPath; note?: string }
 export interface ReaderMessage { id?: string; role: 'user' | 'assistant'; content: string; createdAt: string; variants?: ResultVariant[]; activeVariantId?: string }

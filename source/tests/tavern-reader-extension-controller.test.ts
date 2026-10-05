@@ -137,20 +137,109 @@ test('重新解读失败或取消保留旧结果，不写入存储', async () =>
   assert.equal(fixture.controller.getState().busy, false);
 });
 
-test('切换角色后迟到的回答不会写入新卡或覆盖旧卡', async () => {
+test('切换角色和重开面板不取消后台解读，完成后只保存任务原卡', async () => {
   const fixture = setup();
   await fixture.controller.loadCurrent();
   let resolve!: (text: string) => void;
-  fixture.host.generate = async () => new Promise<string>((done) => { resolve = done; });
+  let jobSignal!: AbortSignal;
+  fixture.host.generate = async (_messages, _settings, signal) => {
+    jobSignal = signal;
+    return new Promise<string>((done) => { resolve = done; });
+  };
+  const results: unknown[] = [];
+  fixture.controller.subscribeJobs((result) => results.push(result));
   const job = fixture.controller.read();
   fixture.setKey('other.png');
   await fixture.controller.loadCurrent();
+  assert.equal(jobSignal.aborted, false);
+  assert.equal(fixture.controller.getState().document?.characterKey, 'mira.png');
+  assert.equal(fixture.controller.getState().busy, true);
   resolve('迟到的解读');
   await job;
+  assert.equal(fixture.getSaved()?.characterKey, 'mira.png');
+  assert.equal(fixture.getSaved()?.analysis, '迟到的解读');
+  assert.equal(fixture.counts().saveCount, 1);
+  assert.deepEqual(results, [{ kind: 'read', characterKey: 'mira.png', characterName: 'Mira', outcome: 'saved' }]);
+  await fixture.controller.loadCurrent();
   assert.equal(fixture.controller.getState().document?.characterKey, 'other.png');
   assert.equal(fixture.controller.getState().record, null);
-  assert.equal(fixture.getSaved()?.analysis, '旧解读 [S1]');
+  assert.equal(fixture.getSaved()?.analysis, '迟到的解读');
+  assert.equal(fixture.counts().saveCount, 1);
+});
+
+test('追问在后台继续，重复加载不重发请求，保存结束后仅通知一次', async () => {
+  const fixture = setup();
+  await fixture.controller.loadCurrent();
+  let finish!: (text: string) => void;
+  let requests = 0;
+  fixture.host.generate = async () => {
+    requests += 1;
+    return new Promise<string>((resolve) => { finish = resolve; });
+  };
+  let finishSave!: () => void;
+  const originalSave = fixture.host.store.save;
+  fixture.host.store.save = async (record) => {
+    await new Promise<void>((resolve) => { finishSave = resolve; });
+    await originalSave(record);
+  };
+  const results: unknown[] = [];
+  fixture.controller.subscribeJobs((result) => results.push(result));
+  const job = fixture.controller.question('人物关系？');
+  await fixture.controller.loadCurrent();
+  await fixture.controller.loadCurrent();
+  await fixture.controller.question('重复提问？');
+  assert.equal(requests, 1);
+  finish('后台回答 [S1]');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(results, [], '存储尚未成功时不能通知已保存');
+  await fixture.controller.loadCurrent();
+  assert.equal(fixture.controller.getState().busy, true);
+  finishSave();
+  await job;
+  assert.equal(fixture.getSaved()?.answers.length, 1);
+  assert.match(fixture.getSaved()!.answers[0].answer, /后台回答/u);
+  assert.deepEqual(results, [{ kind: 'question', characterKey: 'mira.png', characterName: 'Mira', outcome: 'saved' }]);
+});
+
+test('后台保存失败保留原卡未保存结果，通知不谎报成功，重开和切卡不覆盖', async () => {
+  const fixture = setup();
+  await fixture.controller.loadCurrent();
+  fixture.failSave(true);
+  const results: unknown[] = [];
+  fixture.controller.subscribeJobs((result) => results.push(result));
+  await fixture.controller.read();
+  fixture.setKey('other.png');
+  await fixture.controller.loadCurrent();
+  assert.equal(fixture.controller.getState().document?.characterKey, 'mira.png');
+  assert.equal(fixture.controller.getState().record?.analysis, '新解读 [S1]');
+  assert.equal(fixture.controller.getState().unsaved, true);
+  assert.deepEqual(results, [{ kind: 'read', characterKey: 'mira.png', characterName: 'Mira', outcome: 'unsaved' }]);
+  fixture.failSave(false);
+  await fixture.controller.save();
+  assert.equal(fixture.getSaved()?.characterKey, 'mira.png');
+});
+
+test('只有主动停止才取消后台生成，不发完成通知；生成失败通知但不改旧记录', async () => {
+  const fixture = setup();
+  await fixture.controller.loadCurrent();
+  const results: unknown[] = [];
+  const unsubscribe = fixture.controller.subscribeJobs((result) => results.push(result));
+  fixture.host.generate = async (_messages, _settings, signal) => new Promise<string>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  const job = fixture.controller.question('后台问题？');
+  await fixture.controller.loadCurrent();
+  fixture.controller.cancel();
+  await job;
+  assert.deepEqual(results, []);
   assert.equal(fixture.counts().saveCount, 0);
+  fixture.host.generate = async () => { throw new Error('假接口失败'); };
+  await fixture.controller.read();
+  assert.deepEqual(results, [{ kind: 'read', characterKey: 'mira.png', characterName: 'Mira', outcome: 'failed' }]);
+  assert.equal(fixture.getSaved()?.analysis, '旧解读 [S1]');
+  unsubscribe();
+  await fixture.controller.read();
+  assert.equal(results.length, 1);
 });
 
 test('保存失败明确标为未保存，可重试；不得用新任务覆盖未保存结果', async () => {

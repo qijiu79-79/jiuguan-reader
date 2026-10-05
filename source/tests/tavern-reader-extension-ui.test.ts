@@ -197,6 +197,7 @@ function createFakeUpdater(
       calls += 1;
       await onUpdate(setState);
     },
+    async check() { setState('available', '发现更新；没有下载。'); },
     setState,
     updateCalls: () => calls,
   };
@@ -836,7 +837,7 @@ test('刷新按钮仅在 updater 为 updated 时显示', async () => {
   });
 });
 
-test('普通检查和下载不弹窗、不请求确认，也不自动刷新', async () => {
+test('普通检查和下载不弹窗、不请求确认，不在下载请求中直接刷新', async () => {
   const spies = emptySpies();
   await withFakeBrowser(spies, async () => {
     const updater = createFakeUpdater('idle', async (setState) => {
@@ -1039,5 +1040,82 @@ test('更新失败时保留正在输入的虚构问题和追问草稿', async ()
     assert.equal(view.questionInput.value, '失败期间输入的虚构问题');
     assert.deepEqual([...view.questionDrafts], [['fictional-card', '失败后仍要保留的虚构追问']]);
     assert.deepEqual(spies, { showModalCalls: 0, confirmCalls: 0, reloadCalls: 0 });
+  });
+});
+
+test('发现更新时显示下载入口，手动检查只检查、不下载、不清草稿或刷新', async () => {
+  const spies = emptySpies();
+  await withFakeBrowser(spies, async () => {
+    const updater = createFakeUpdater('available');
+    const view = createView({ updater, settingsDirty: true, questionText: '未发送的问题', controllerState: { busy: true } });
+    const controls = view.createUpdateControls() as unknown as FakeElement;
+    const update = findButton(controls, '发现更新 · 一键更新');
+    const check = findButton(controls, '检查更新');
+    assert.ok(update && !update.disabled);
+    assert.ok(check && !check.disabled);
+    assert.equal(controls.dataset.updateAvailable, 'true');
+    check.click();
+    await Promise.resolve();
+    assert.equal(updater.updateCalls(), 0);
+    assert.equal(updater.getState().phase, 'available');
+    assert.equal(view.questionInput.value, '未发送的问题');
+    assert.equal(view.settingsDirty, true);
+    assert.deepEqual(spies, { showModalCalls: 0, confirmCalls: 0, reloadCalls: 0 });
+  });
+});
+
+test('正在解读、追问或保存时重新打开面板不重载资料或取消任务', async () => {
+  const spies = emptySpies();
+  await withFakeBrowser(spies, async () => {
+    let loadCalls = 0;
+    const state = { busy: true };
+    const view = Object.create(ReaderView.prototype) as { open(): Promise<void> };
+    const panel = new FakeElement('dialog', spies);
+    Object.assign(view, { panel, controller: { getState: () => state, loadCurrent: async () => { loadCalls += 1; } } });
+    await view.open();
+    assert.equal(panel.open, true);
+    assert.equal(loadCalls, 0);
+    await view.open();
+    assert.equal(loadCalls, 0);
+    assert.equal(spies.showModalCalls, 1);
+    state.busy = false;
+    await view.open();
+    assert.equal(loadCalls, 1);
+  });
+});
+
+test('下载成功延时自动刷新，不确认；任务或草稿暂缓，清除后只刷新一次', async () => {
+  const spies = emptySpies();
+  await withFakeBrowser(spies, async () => {
+    const originalTimeout = globalThis.setTimeout;
+    const originalClear = globalThis.clearTimeout;
+    const callbacks: Array<() => void> = [];
+    Object.assign(globalThis, { setTimeout: (callback: () => void, delay: number) => {
+      assert.equal(delay, 1500);
+      callbacks.push(callback);
+      return callbacks.length;
+    }, clearTimeout: () => {} });
+    try {
+      const updater = createFakeUpdater('updated');
+      const view = createView({ updater, settingsDirty: true }) as ReaderViewHarness & { scheduleAutoReload(): void; autoReloadEnabled: boolean; autoReloadTimer: number | null; autoReloadStarted: boolean; hostReloadBlockReason(): string };
+      let chatBusy = true;
+      Object.assign(view, { autoReloadEnabled: true, autoReloadTimer: null, autoReloadStarted: false, hostReloadBlockReason: () => chatBusy ? '聊天正在生成' : '' });
+      view.scheduleAutoReload();
+      view.scheduleAutoReload();
+      assert.equal(callbacks.length, 1, '不能重复计时或刷新');
+      callbacks.shift()!();
+      assert.equal(spies.reloadCalls, 0, '未保存设置保护');
+      view.settingsDirty = false;
+      callbacks.shift()!();
+      assert.equal(spies.reloadCalls, 0, '聊天生成保护');
+      chatBusy = false;
+      callbacks.shift()!();
+      assert.equal(spies.reloadCalls, 1);
+      view.scheduleAutoReload();
+      assert.equal(callbacks.length, 0);
+      assert.equal(spies.confirmCalls, 0);
+    } finally {
+      Object.assign(globalThis, { setTimeout: originalTimeout, clearTimeout: originalClear });
+    }
   });
 });

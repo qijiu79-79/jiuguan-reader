@@ -1,6 +1,6 @@
 {
   "name": "jiuguan-yika",
-  "version": "0.2.11",
+  "version": "0.2.16",
   "description": "本地角色卡读卡助手与选择性翻译工作台",
   "author": "酒馆译卡 contributors; based on CardLoom Translate",
   "private": true,

@@ -2,6 +2,7 @@ import { DEFAULT_ANALYSIS_PROMPT, DEFAULT_QUICK_QUESTIONS, normalizeReaderSettin
 import { renderReadingText } from './render.js';
 import { READER_EXTENSION_VERSION } from './updater.js';
 import { resolveCustomApiBaseUrl } from './custom-connection.js';
+import { notifyReader } from './notifications.js';
 import type { ReaderController, ReaderState } from './controller.js';
 import type { ExtensionUpdater } from './updater.js';
 import type { ReaderConnection, ReaderHost, ReaderSettings, ReaderSource } from './types.js';
@@ -69,19 +70,30 @@ export class ReaderView {
   private readonly questionDrafts = new Map<string, string>();
   private updateRequestPending = false;
   private readonly updateControlRenderers = new Set<() => void>();
+  private autoReloadEnabled = true;
+  private autoReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoReloadStarted = false;
 
   constructor(
     private readonly controller: ReaderController,
     private readonly host: ReaderHost,
     private readonly updater: ExtensionUpdater,
+    private readonly hostReloadBlockReason: () => string = () => '',
   ) {
     this.buildPanel();
     this.buildSettings();
     this.buildSourcePanel();
     document.body.append(this.panel, this.settingsPanel, this.sourcePanel);
     controller.subscribe((state) => this.render(state));
+    controller.subscribeJobs((result) => {
+      const task = result.kind === 'read' ? '解读' : '追问';
+      if (result.outcome === 'saved') notifyReader(`「${result.characterName}」${task}已完成并保存，可以打开读卡查看。`);
+      else if (result.outcome === 'unsaved') notifyReader(`「${result.characterName}」${task}已完成，但保存失败。请打开读卡点“保存”，不要刷新页面。`, 'warning');
+      else notifyReader(`「${result.characterName}」${task}失败，请打开读卡查看原因；之前的结果仍保留。`, 'error');
+    });
+    this.updater.subscribe(() => this.scheduleAutoReload());
     window.addEventListener('beforeunload', (event) => {
-      if (!this.hasUnsavedInput()) return;
+      if (!this.hasUnsavedInput() && !this.controller.getState().busy) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -91,6 +103,7 @@ export class ReaderView {
 
   async open(): Promise<void> {
     if (!this.panel.open) this.panel.showModal();
+    if (this.controller.getState().busy) return;
     await this.controller.loadCurrent();
   }
 
@@ -104,14 +117,15 @@ export class ReaderView {
   createUpdateControls(): HTMLElement {
     const controls = element('section', 'jgr-update-controls');
     controls.append(element('p', 'jgr-muted', `当前版本：${READER_EXTENSION_VERSION}`));
-    controls.append(element('p', 'jgr-muted', '更新直接在这里下载，不另开弹窗，也不清除未保存输入。刷新前再保存读卡草稿与酒馆其他未提交的输入。'));
+    controls.append(element('p', 'jgr-muted', '打开酒馆时自动检查更新，之后每 6 小时复查；不会自动下载。点“一键更新”下载成功后自动刷新；有读卡任务或未保存输入时暂缓。请先保存酒馆其他页面的输入。'));
 
     const actions = element('div', 'jgr-update-actions');
     const updateButton = button('一键更新', 'jgr-primary');
+    const checkButton = button('检查更新');
     const reloadButton = button('刷新页面', 'jgr-primary');
     reloadButton.title = '重新载入整个酒馆页面，应用已下载的更新；请先保存其他输入。';
     reloadButton.hidden = true;
-    actions.append(updateButton, reloadButton);
+    actions.append(updateButton, checkButton, reloadButton);
     const status = element('p', 'jgr-update-status');
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
@@ -123,14 +137,17 @@ export class ReaderView {
 
     const render = (state: ReturnType<ExtensionUpdater['getState']> = this.updater.getState()): void => {
       updateButton.disabled = this.updateRequestPending || state.phase === 'checking' || state.phase === 'updating' || state.phase === 'updated';
+      checkButton.disabled = this.updateRequestPending || state.phase === 'checking' || state.phase === 'updating';
       updateButton.textContent = state.phase === 'checking' ? '正在检查更新…'
         : state.phase === 'updating' ? '正在下载更新…'
           : state.phase === 'current' ? '重新检查更新'
             : state.phase === 'updated' ? '已下载更新'
-              : state.phase === 'error' ? '重试更新' : '一键更新';
+              : state.phase === 'available' ? '发现更新 · 一键更新'
+                : state.phase === 'error' ? '重试更新' : '一键更新';
+      controls.dataset.updateAvailable = String(state.phase === 'available');
       reloadButton.hidden = state.phase !== 'updated';
       reloadButton.disabled = this.updateRequestPending;
-      status.textContent = state.message;
+      status.textContent = state.phase === 'updated' ? this.getAutoReloadMessage() : state.message;
       status.hidden = !state.message.trim();
     };
     this.updateControlRenderers.add(render);
@@ -138,6 +155,7 @@ export class ReaderView {
     render();
 
     updateButton.addEventListener('click', () => { void this.requestExtensionUpdate(feedback); });
+    checkButton.addEventListener('click', () => { void this.updater.check(); });
     reloadButton.addEventListener('click', () => this.reloadAfterUpdate(feedback));
     return controls;
   }
@@ -148,7 +166,7 @@ export class ReaderView {
     settings.addEventListener('click', () => this.openSettings());
     header.append(this.title, settings, closeButton(this.panel));
     const scroll = element('div', 'jgr-scroll');
-    const intro = element('div', 'jgr-muted', '读人物设定、经历与关联世界书 · 不读开场白或作者注释');
+    const intro = element('div', 'jgr-muted', '读人物设定、经历与关联世界书 · 不读开场白或作者注释。关闭面板可继续聊天；任务在后台继续，完成后顶部绿条提醒。只有“停止”会取消任务，刷新或退出页面仍会中断。');
     this.scope.append(this.scopeSummary, this.scopeBody);
     this.status.setAttribute('role', 'status');
     this.status.setAttribute('aria-live', 'polite');
@@ -450,9 +468,9 @@ export class ReaderView {
     this.view = 'answers';
     void this.controller.question(question).then(() => {
       const state = this.controller.getState();
-      if (state.document?.characterKey === character && (state.record?.answers.length ?? 0) > previousCount && this.questionInput.value === question) {
-        this.questionInput.value = '';
-        this.questionDrafts.set(character, '');
+      if (state.record?.characterKey === character && (state.record.answers.length ?? 0) > previousCount) {
+        if (this.questionDrafts.get(character) === question) this.questionDrafts.set(character, '');
+        if (this.currentCharacter === character && this.questionInput.value === question) this.questionInput.value = '';
       }
     });
   }
@@ -733,6 +751,7 @@ export class ReaderView {
     } finally {
       this.updateRequestPending = false;
       this.renderUpdateControls();
+      this.scheduleAutoReload();
     }
   }
 
@@ -748,6 +767,9 @@ export class ReaderView {
       feedback.hidden = false;
       return;
     }
+    this.autoReloadStarted = true;
+    if (this.autoReloadTimer) clearTimeout(this.autoReloadTimer);
+    this.autoReloadTimer = null;
     window.location.reload();
   }
 
@@ -763,7 +785,30 @@ export class ReaderView {
     if (state.loading) return '正在读取角色卡资料，请完成后再刷新。更新文件已经下载，不需要重新更新。';
     if (state.busy) return '读卡、追问或保存正在进行，请等待结束后再刷新。更新文件已经下载，不需要重新更新。';
     if (this.hasUnsavedInput()) return '更新文件已经下载。检测到未保存的读卡设置、问题草稿或解读结果；请在刷新前保存设置和结果，或清空不需要的问题草稿。当前输入仍保留。';
+    const hostReason = this.hostReloadBlockReason?.();
+    if (hostReason) return hostReason;
     return '';
+  }
+
+  private getAutoReloadMessage(): string {
+    const blocked = this.getReloadBlockReason();
+    return blocked ? `更新已下载，自动刷新暂缓：${blocked}`
+      : '更新已下载，即将自动刷新应用新版；无需确认。';
+  }
+
+  private scheduleAutoReload(): void {
+    if (!this.autoReloadEnabled || this.autoReloadStarted || this.autoReloadTimer || this.updater.getState().phase !== 'updated') return;
+    this.autoReloadTimer = setTimeout(() => {
+      this.autoReloadTimer = null;
+      if (this.updater.getState().phase !== 'updated') return;
+      this.renderUpdateControls();
+      if (this.getReloadBlockReason()) {
+        this.scheduleAutoReload();
+        return;
+      }
+      this.autoReloadStarted = true;
+      window.location.reload();
+    }, 1500);
   }
 
   private renderUpdateControls(): void {

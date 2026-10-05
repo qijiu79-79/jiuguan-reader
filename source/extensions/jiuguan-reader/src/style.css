@@ -89,6 +89,7 @@
 .jgr-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; margin: 8px 0; }
 .jgr-update-status, .jgr-update-warning { min-width: 0; margin: 8px 0; overflow-wrap: anywhere; }
 .jgr-update-warning { color: #ffcf97; }
+.jgr-update-controls[data-update-available="true"] { border-left: 3px solid #83c99a; padding-left: 10px; }
 
 @media (max-width: 600px), (max-height: 480px) and (orientation: landscape) {
   .jgr-dialog {

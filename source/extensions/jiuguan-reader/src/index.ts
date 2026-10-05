@@ -2,6 +2,7 @@ import { createReaderHost } from './host.js';
 import { ReaderController } from './controller.js';
 import { ReaderView } from './ui.js';
 import { ReaderUpdater } from './updater.js';
+import { notifyReader } from './notifications.js';
 import './style.css';
 
 interface NativeContext {
@@ -37,7 +38,14 @@ async function initialize(): Promise<void> {
       return context.getRequestHeaders();
     },
   });
-  const view = new ReaderView(controller, host, updater);
+  const coreScriptUrl = '/script.js';
+  const core = await import(/* @vite-ignore */ coreScriptUrl);
+  const view = new ReaderView(controller, host, updater, () => {
+    if (typeof core.isGenerating === 'function' && core.isGenerating()) return '酒馆聊天正在生成，结束后自动刷新。';
+    const chatInput = document.getElementById('send_textarea') as HTMLTextAreaElement | null;
+    if (chatInput?.value.trim()) return '酒馆聊天输入框还有未发送的文字，发送或清空后自动刷新。';
+    return '';
+  });
   let previousKey = currentCardKey();
   let refreshPending = false;
   const refreshMaterial = (): void => {
@@ -84,7 +92,7 @@ async function initialize(): Promise<void> {
     if (entry) entry.disabled = !key;
     if (key !== previousKey) {
       previousKey = key;
-      if (view.isOpen()) void controller.loadCurrent();
+      refreshMaterial();
     }
     const settingsContainer = document.getElementById('extensions_settings');
     if (settingsContainer && !document.getElementById('jgr-extension-settings')) {
@@ -114,6 +122,27 @@ async function initialize(): Promise<void> {
     }
   };
   mount();
+  let updateNotified = false;
+  updater.subscribe((state) => {
+    const title = document.querySelector('#jgr-extension-settings .inline-drawer-header b');
+    if (title) title.textContent = state.phase === 'available' ? '酒馆读卡 · 有更新'
+      : state.phase === 'updated' ? '酒馆读卡 · 待刷新' : '酒馆读卡';
+    if (state.phase === 'available' && !updateNotified) {
+      updateNotified = true;
+      notifyReader('酒馆读卡有更新，请在“扩展程序 → 酒馆读卡”中点击“一键更新”。', 'info');
+    }
+  });
+  const checkIntervalMs = 6 * 60 * 60 * 1000;
+  let lastUpdateCheck = 0;
+  const checkForUpdates = (): void => {
+    if (document.visibilityState === 'hidden' || updater.getState().phase === 'updated') return;
+    if (Date.now() - lastUpdateCheck < checkIntervalMs) return;
+    lastUpdateCheck = Date.now();
+    void updater.check();
+  };
+  checkForUpdates();
+  setInterval(checkForUpdates, checkIntervalMs);
+  document.addEventListener('visibilitychange', checkForUpdates);
   let mountPending = false;
   const observer = new MutationObserver(() => {
     if (mountPending) return;

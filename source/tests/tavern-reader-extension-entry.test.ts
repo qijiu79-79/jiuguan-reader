@@ -77,3 +77,18 @@ test('手机窄屏和横屏继续保留安全区、滚动、44px 操作、16px �
   assert.match(styleSource, /\.jgr-dialog textarea, \.jgr-dialog input, \.jgr-dialog select\s*\{[^}]*font-size: 16px/su);
   assert.match(styleSource, /\.jgr-dialog \.jgr-button:focus-visible[^{]*\{[^}]*outline: 2px solid/su);
 });
+
+test('自动检查只调用check，扩展标题显示有更新且每页只提醒一次', () => {
+  assert.match(entrySource, /void updater\.check\(\)/u);
+  assert.match(entrySource, /6 \* 60 \* 60 \* 1000/u);
+  assert.match(entrySource, /document\.visibilityState === 'hidden'/u);
+  assert.match(entrySource, /document\.addEventListener\('visibilitychange', checkForUpdates\)/u);
+  assert.match(entrySource, /酒馆读卡 · 有更新/u);
+  assert.match(entrySource, /state\.phase === 'available' && !updateNotified/u);
+  assert.doesNotMatch(entrySource, /updater\.update\(|location\.reload\(|confirm\(|alert\(/u);
+});
+
+test('宿主切换角色通过延期刷新处理，不直接重载运行中任务', () => {
+  assert.match(mountSource, /if \(key !== previousKey\)\s*\{\s*previousKey = key;\s*refreshMaterial\(\);/u);
+  assert.match(entrySource, /if \(state\.busy \|\| state\.unsaved \|\| state\.loading\)\s*\{\s*refreshPending = true;/u);
+});
