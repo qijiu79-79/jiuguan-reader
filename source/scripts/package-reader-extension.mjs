@@ -16,7 +16,7 @@ export const installFiles = [
 export const sourceFiles = [
   'package.json', 'package-lock.json', 'tsconfig.base.json', 'tsconfig.reader-extension.json',
   'LICENSE', 'THIRD_PARTY_NOTICES.md',
-  'config/tavern-types.ts', 'server/tavern/reader-domain.ts',
+  'config/tavern-types.ts', 'config/translation-defaults.ts', 'server/tavern/reader-domain.ts',
   'extensions/jiuguan-reader/manifest.json', 'extensions/jiuguan-reader/README.md',
   'extensions/jiuguan-reader/vite.config.ts',
   'extensions/jiuguan-reader/src/types.ts', 'extensions/jiuguan-reader/src/settings.ts',

@@ -3,6 +3,7 @@ import { renderReadingText } from './render.js';
 import { READER_EXTENSION_VERSION } from './updater.js';
 import { resolveCustomApiBaseUrl } from './custom-connection.js';
 import { notifyReader } from './notifications.js';
+import { getFollowUpDocument } from './source-domain.js';
 import type { ReaderController, ReaderState } from './controller.js';
 import type { ExtensionUpdater } from './updater.js';
 import type { ReaderConnection, ReaderHost, ReaderSettings, ReaderSource } from './types.js';
@@ -370,8 +371,13 @@ export class ReaderView {
       ? `${state.unsaved ? '尚未保存' : '已保存'} · ${new Date(state.record.readAt).toLocaleString()} · ${state.record.model}`
       : '';
     const stale = Boolean(state.document && state.record && state.document.fingerprint !== state.record.fingerprint);
-    if (stale) this.metadata.textContent += ' · 设定已变化，当前显示旧解读';
-    if (state.document !== this.previousDocument) {
+    const questionDocument = getFollowUpDocument(state.document, state.record);
+    if (stale) this.metadata.textContent += questionDocument
+      ? ' · 当前资料与保存版本不同；追问使用已保存的原文，最新设定需重新解读'
+      : ' · 当前资料与保存版本不同；旧解读缺少完整原文，请重新解读后追问';
+    const documentChanged = state.document !== this.previousDocument;
+    const recordChanged = state.record !== this.previousRecord;
+    if (documentChanged) {
       const characterKey = state.document?.characterKey ?? '';
       if (characterKey !== this.currentCharacter) {
         this.questionDrafts.set(this.currentCharacter, this.questionInput.value);
@@ -379,14 +385,14 @@ export class ReaderView {
         this.questionInput.value = this.questionDrafts.get(characterKey) ?? '';
         this.view = 'analysis';
       }
-      this.renderScope(state);
       this.previousDocument = state.document;
     }
-    if (state.record !== this.previousRecord) {
+    if (recordChanged) {
       this.renderRecord(state);
       this.previousRecord = state.record;
     }
-    const canAsk = Boolean(state.record && state.document && !state.loading && !state.busy && !state.unsaved && !stale);
+    if (documentChanged || recordChanged) this.renderScope(state);
+    const canAsk = Boolean(questionDocument && !state.loading && !state.busy && !state.unsaved);
     this.askButton.disabled = !canAsk;
     this.questionInput.disabled = !canAsk;
     this.renderQuestions(canAsk);
@@ -396,8 +402,9 @@ export class ReaderView {
   }
 
   private renderScope(state: ReaderState): void {
-    const document = state.document;
-    this.scopeSummary.textContent = document ? `读取范围：${document.sources.length} 项资料 · ${document.worldbooks.length} 本关联世界书` : '读取范围';
+    const document = getFollowUpDocument(state.document, state.record) ?? state.document;
+    const label = document && document !== state.document ? '已保存资料范围' : '读取范围';
+    this.scopeSummary.textContent = document ? `${label}：${document.sources.length} 项资料 · ${document.worldbooks.length} 本关联世界书` : '读取范围';
     this.scopeBody.replaceChildren();
     if (!document) return;
     const books = document.worldbooks.length ? `关联世界书：${document.worldbooks.join('、')}` : '未找到角色关联的外部世界书；卡内世界书仍会读取。';

@@ -39,6 +39,7 @@ test('publish directory is fresh, root contains only install files, and source i
   sourceEntries[`${sourcePrefix}/SOURCE-README.md`] = new TextEncoder().encode('Rebuild instructions');
 
   assert.ok(sourceFiles.includes('extensions/jiuguan-reader/src/updater.ts'));
+  assert.ok(sourceFiles.includes('config/translation-defaults.ts'), '共享类型引用的翻译范围类型也必须随源码分发');
   assert.ok(sourceFiles.includes('tests/tavern-reader-extension-updater.test.ts'));
   assert.ok(sourceFiles.includes('tests/tavern-reader-extension-ui.test.ts'));
   assert.ok(sourceFiles.includes('tests/tavern-reader-extension-entry.test.ts'));

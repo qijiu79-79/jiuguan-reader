@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { defaultReaderSettings } from '../extensions/jiuguan-reader/src/settings.js';
 import { ReaderView } from '../extensions/jiuguan-reader/src/ui.js';
+import type { ReaderState } from '../extensions/jiuguan-reader/src/controller.js';
 import type { ExtensionUpdater, ExtensionUpdateState } from '../extensions/jiuguan-reader/src/updater.js';
 import type { ReaderConnection, ReaderHost, ReaderSettings } from '../extensions/jiuguan-reader/src/types.js';
 
@@ -134,7 +135,7 @@ class FakeElement {
   }
 
   click(): void {
-    this.dispatch('click');
+    if (!this.disabled) this.dispatch('click');
   }
 
   dispatch(type: string): void {
@@ -149,6 +150,13 @@ class FakeElement {
       if (selector === 'label' && current.tagName === 'label') return current;
     }
     return null;
+  }
+
+  querySelectorAll(selector: string): FakeElement[] {
+    return this.children.flatMap((child) => [
+      ...(child.tagName === selector ? [child] : []),
+      ...child.querySelectorAll(selector),
+    ]);
   }
 
   checkValidity(): boolean {
@@ -252,6 +260,7 @@ async function withFakeBrowser<T>(spies: UiSpies, callback: () => T | Promise<T>
   const confirmDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'confirm');
   const fakeDocument = {
     createElement: (tagName: string) => new FakeElement(tagName, spies),
+    createTextNode: (text: string) => text,
   };
   const fakeWindow = {
     confirm: () => {
@@ -286,6 +295,114 @@ async function withFakeBrowser<T>(spies: UiSpies, callback: () => T | Promise<T>
 function emptySpies(): UiSpies {
   return { showModalCalls: 0, confirmCalls: 0, reloadCalls: 0 };
 }
+
+interface ReaderPanelViewHarness {
+  askButton: FakeElement;
+  questionInput: FakeElement;
+  questions: FakeElement;
+  scopeSummary: FakeElement;
+  scopeBody: FakeElement;
+  metadata: FakeElement;
+  readButton: FakeElement;
+  buildPanel(): void;
+  render(state: ReaderState): void;
+}
+
+function readingPanelState(): ReaderState {
+  const sources = [
+    { id: '[S1]', label: '已保存的人物设定', text: 'A fictional lighthouse keeper.' },
+    { id: '[S2]', label: '已保存的世界书条目', text: 'The fictional lamp stays lit.' },
+  ];
+  return {
+    loading: false, busy: false, unsaved: false, progress: null, status: '', error: '',
+    document: {
+      characterKey: 'fictional-card.png', characterName: '虚构角色', fingerprint: 'new-fingerprint',
+      sources: [{ id: '[S1]', label: '当前新版设定', text: 'A fictional desert explorer.' }],
+      worldbooks: ['当前新版世界书'], warnings: [],
+    },
+    record: {
+      schemaVersion: 1, characterKey: 'fictional-card.png', characterName: '虚构角色', fingerprint: 'saved-fingerprint',
+      analysis: '虚构角色守护灯塔 [S1]。', chunkNotes: [], sourceCount: 2, chunkCount: 1,
+      sources, worldbooks: ['已保存的世界书'], warnings: ['已保存的范围提示'],
+      readAt: '2026-10-01T00:00:00.000Z', model: 'fictional-model', answers: [],
+    },
+  };
+}
+
+function createReaderPanelView(spies: UiSpies, state: ReaderState, asked: string[]): ReaderPanelViewHarness {
+  const view = Object.create(ReaderView.prototype) as ReaderPanelViewHarness;
+  for (const name of [
+    'panel', 'title', 'status', 'error', 'fixConnectionButton', 'streamPreview', 'streamText',
+    'scope', 'scopeSummary', 'scopeBody', 'metadata', 'readButton', 'cancelButton', 'saveButton',
+    'tabs', 'analysisTab', 'answersTab', 'analysisBody', 'answersBody', 'questions', 'questionInput', 'askButton',
+  ]) {
+    const tag = name.endsWith('Button') || name.endsWith('Tab') ? 'button' : name === 'questionInput' ? 'textarea' : 'div';
+    Object.assign(view, { [name]: new FakeElement(tag, spies) });
+  }
+  Object.assign(view, {
+    host: { getSettings: defaultReaderSettings },
+    controller: { getState: () => state, question: async (question: string) => { asked.push(question); } },
+    questionDrafts: new Map<string, string>(), currentCharacter: '', previousRecord: undefined, previousDocument: null, view: 'analysis',
+  });
+  view.buildPanel();
+  view.render(state);
+  return view;
+}
+
+test('旧解读仍能点击快捷问题和自由提问，并明确显示保存的资料范围', async () => {
+  const spies = emptySpies();
+  await withFakeBrowser(spies, async () => {
+    const state = readingPanelState();
+    const asked: string[] = [];
+    const view = createReaderPanelView(spies, state, asked);
+    assert.equal(view.askButton.disabled, false);
+    assert.equal(view.questionInput.disabled, false);
+    const shortcuts = view.questions.querySelectorAll('button');
+    assert.equal(shortcuts.length, defaultReaderSettings().quickQuestions.length);
+    assert.ok(shortcuts.every((shortcut) => !shortcut.disabled));
+    assert.match(view.metadata.textContent, /追问.*已保存/u);
+    assert.match(view.scopeSummary.textContent, /已保存.*2 项资料/u);
+    assert.ok(findNode(view.scopeBody, (node) => node.textContent.includes('已保存的世界书')));
+    assert.ok(!findNode(view.scopeBody, (node) => node.textContent.includes('当前新版')));
+    shortcuts[1].click();
+    await Promise.resolve();
+    assert.deepEqual(asked, [defaultReaderSettings().quickQuestions[1]]);
+    view.questionInput.value = '她曾在哪里工作？';
+    view.askButton.click();
+    await Promise.resolve();
+    assert.deepEqual(asked, [defaultReaderSettings().quickQuestions[1], '她曾在哪里工作？']);
+
+    state.record = {
+      ...state.record!, fingerprint: state.document!.fingerprint,
+      sources: state.document!.sources, sourceCount: state.document!.sources.length,
+      worldbooks: state.document!.worldbooks, warnings: [],
+    };
+    view.render(state);
+    assert.match(view.scopeSummary.textContent, /^读取范围：1 项资料/u);
+    assert.ok(findNode(view.scopeBody, (node) => node.textContent.includes('当前新版世界书')));
+    assert.doesNotMatch(view.metadata.textContent, /当前资料.*不同/u);
+  });
+});
+
+test('生成、加载、未保存或旧原文不完整时保持追问保护，并给出缺失提示', async () => {
+  const spies = emptySpies();
+  await withFakeBrowser(spies, () => {
+    const state = readingPanelState();
+    const asked: string[] = [];
+    const view = createReaderPanelView(spies, state, asked);
+    for (const patch of [{ busy: true }, { loading: true }, { unsaved: true }, { document: null }, { record: null }]) {
+      view.render({ ...state, ...patch });
+      assert.equal(view.askButton.disabled, true);
+      assert.equal(view.questionInput.disabled, true);
+      assert.ok(view.questions.querySelectorAll('button').every((shortcut) => shortcut.disabled));
+      view.questions.querySelectorAll('button')[0].click();
+    }
+    view.render({ ...state, record: { ...state.record!, sources: [] } });
+    assert.equal(view.askButton.disabled, true);
+    assert.match(view.metadata.textContent, /缺少完整原文.*重新解读/u);
+    assert.deepEqual(asked, []);
+  });
+});
 
 interface FakeReaderSettingsHost {
   host: ReaderHost;

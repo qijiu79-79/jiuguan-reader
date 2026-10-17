@@ -1,4 +1,4 @@
-import { buildReadingDocument } from './source-domain.js';
+import { buildReadingDocument, getFollowUpDocument } from './source-domain.js';
 import { analyzeDocument, askDocument } from './reader-engine.js';
 import { createBrowserUuid } from './browser-compat.js';
 import type { ReaderHost, ReadingDocument, ReadingProgress, SavedReading } from './types.js';
@@ -154,14 +154,19 @@ export class ReaderController {
       this.patch({ error: '请先保存当前结果，再继续追问。' });
       return;
     }
-    if (document.fingerprint !== saved.fingerprint) {
-      this.patch({ error: '卡片或关联世界书已变化。旧解读仍保留，请重新解读后再追问当前设定。' });
+    if (document.characterKey !== saved.characterKey) {
+      this.patch({ error: '当前资料与已保存解读不是同一角色，请重新打开读卡面板。' });
       return;
     }
-    await this.run('question', document, async (signal, onProgress) => {
+    const questionDocument = getFollowUpDocument(document, saved);
+    if (!questionDocument) {
+      this.patch({ error: '旧解读缺少完整原文，无法安全继续追问；请重新解读当前设定。之前保存的内容仍保留。' });
+      return;
+    }
+    await this.run('question', questionDocument, async (signal, onProgress) => {
       const settings = structuredClone(this.host.getSettings());
       const model = this.host.describeConnection(settings.connection);
-      const result = await this.askReading(document, saved, question.trim(), settings, this.host.generate.bind(this.host), signal, onProgress);
+      const result = await this.askReading(questionDocument, saved, question.trim(), settings, this.host.generate.bind(this.host), signal, onProgress);
       signal.throwIfAborted();
       return {
         ...structuredClone(saved),

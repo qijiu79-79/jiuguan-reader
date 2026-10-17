@@ -1,7 +1,7 @@
 import { buildReaderSources } from '../../../server/tavern/reader-domain.js';
 import type { Material, ReaderSource } from '../../../config/tavern-types.js';
 import { sha256Hex, type HashDependencies } from './browser-compat.js';
-import type { ReadingDocument, ReadingMaterial } from './types.js';
+import type { ReadingDocument, ReadingMaterial, SavedReading } from './types.js';
 
 const GREETING_FIELDS = new Set([
   'first_mes', 'firstmessage', 'first_message', 'firstmes',
@@ -21,6 +21,21 @@ interface WorldbookSource {
 
 interface MergedWorldbookSource extends WorldbookSource {
   origins: string[];
+}
+
+/** Keep follow-ups on one complete same-card snapshot, including its source IDs. */
+export function getFollowUpDocument(current: ReadingDocument | null, saved: SavedReading | null): ReadingDocument | null {
+  if (!current || !saved || current.characterKey !== saved.characterKey) return null;
+  if (current.fingerprint === saved.fingerprint) return current;
+  if (!saved.sources.length || saved.sourceCount !== saved.sources.length || !saved.sources.some((source) => source.text.trim())) return null;
+  return {
+    characterKey: saved.characterKey,
+    characterName: saved.characterName,
+    fingerprint: saved.fingerprint,
+    sources: saved.sources,
+    worldbooks: saved.worldbooks,
+    warnings: saved.warnings,
+  };
 }
 
 /**
