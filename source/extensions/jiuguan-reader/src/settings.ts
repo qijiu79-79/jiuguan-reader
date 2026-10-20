@@ -12,9 +12,15 @@ export const LEGACY_ANALYSIS_PROMPT = `先用一句话说明这张卡讲什么�
 不解读开场白、作者注释、标签、版本等不参与聊天的管理信息，也不补写没有提供的内容。世界书常驻、条件触发与禁用条目要区分；禁用内容可以说明，但不能说正在生效；不同分支不能说同时发生。
 注明资料缺失与不确定处，不擅自补全。关键说法标注 [S数字] 来源，便于查看原文。`;
 
-export const DEFAULT_ANALYSIS_PROMPT = `只帮我简单快速了解本卡的大概设定、角色经历和与玩家的关系。默认介绍 500 字以内，简单的卡更短，最多 5 个简短要点：人物是谁与基本性格、关键经历、玩家和人物的关系、必要的背景。重要隐藏设定或触发条件只在影响理解时一句带过，不为了凑栏目展开。
+/** Exact previous built-in default; custom or synchronized prompt text is never rewritten. */
+export const PREVIOUS_DEFAULT_ANALYSIS_PROMPT = `只帮我简单快速了解本卡的大概设定、角色经历和与玩家的关系。默认介绍 500 字以内，简单的卡更短，最多 5 个简短要点：人物是谁与基本性格、关键经历、玩家和人物的关系、必要的背景。重要隐藏设定或触发条件只在影响理解时一句带过，不为了凑栏目展开。
 不要分析主要矛盾、心理成因、适合的玩法或推荐玩法，不续写、不评价、不扩展，也不逐条复述世界书。用户有疑问会自己追问；追问只简短回答该问题。
 不解读开场白、作者注释、标签、版本等管理信息。不要补写未提供的内容；区分常驻、条件触发和禁用内容，不把历史当现在、不同分支当同时发生。关键事实标注 [S数字] 来源；资料缺失只在影响回答时简短注明。`;
+
+export const DEFAULT_ANALYSIS_PROMPT = `只帮我简单快速了解本卡的大概设定、角色经历和与玩家的关系。默认介绍 500 字以内，简单的卡更短，最多 5 个简短要点：人物是谁与基本性格、关键经历、玩家和人物的关系、必要的背景。重要隐藏设定或触发条件只在影响理解时一句带过，不为了凑栏目展开。
+先单独输出“人物设定速览”，不要分析主要矛盾、心理成因、适合的玩法或推荐玩法，不续写、不评价、不扩展，也不逐条复述世界书或介绍作者注释、标签、版本等管理信息。人物设定速览最多 5 个简短要点；开场白另列，不计入这 5 点。
+如原文中有明确标记为主开场、备用开场或群聊开场的来源，再另起“开场白速览”一节。按原卡顺序，主开场及每一个备用开场各占一行；有群聊开场时也逐个单列。每行保留原有类别和编号，简短介绍该条的场景、关系或当下互动并标注对应来源编号；不要把不同开场混在一段、互相合并或省略相似项，也不要长篇复述。开场白逐行列表不受 500 字限制，也不限制条目数。若没有明确的开场来源（例如只有粘贴简介或纯文本），不输出该节、不推测开场内容。只有完整原文支持时才介绍；资料明确标注未完整提供的条目要如实说明，不要硬截断或声称已介绍全部。
+用户有疑问会自己追问；追问只简短回答该问题。不要补写未提供的内容；区分常驻、条件触发和禁用内容，不把历史当现在、不同分支当同时发生。关键事实标注 [S数字] 来源；资料缺失只在影响回答时简短注明。`;
 
 export const DEFAULT_QUICK_QUESTIONS = [
   '角色有哪些重要经历？这些经历怎样影响现在的性格？',
@@ -41,6 +47,7 @@ export function normalizeReaderSettings(value: unknown): ReaderSettings {
   const input = asRecord(value);
   const connection = asRecord(input.connection);
   const generation = asRecord(input.generation);
+  const analysisPrompt = typeof input.analysisPrompt === 'string' ? input.analysisPrompt : undefined;
   const model = typeof connection.model === 'string' ? connection.model.trim() : '';
   const customApiKeys: Record<string, string> = {};
   for (const [address, key] of Object.entries(asRecord(input.customApiKeys))) {
@@ -49,7 +56,9 @@ export function normalizeReaderSettings(value: unknown): ReaderSettings {
   }
   return {
     systemPrompt: typeof input.systemPrompt === 'string' && input.systemPrompt !== LEGACY_SYSTEM_PROMPT ? input.systemPrompt : defaults.systemPrompt,
-    analysisPrompt: typeof input.analysisPrompt === 'string' && input.analysisPrompt !== LEGACY_ANALYSIS_PROMPT ? input.analysisPrompt : defaults.analysisPrompt,
+    analysisPrompt: analysisPrompt === LEGACY_ANALYSIS_PROMPT || analysisPrompt === PREVIOUS_DEFAULT_ANALYSIS_PROMPT
+      ? defaults.analysisPrompt
+      : analysisPrompt ?? defaults.analysisPrompt,
     connection: {
       mode: connection.mode === 'custom' ? 'custom' : connection.mode === 'profile' ? 'profile' : 'current',
       profileId: typeof connection.profileId === 'string' ? connection.profileId : '',

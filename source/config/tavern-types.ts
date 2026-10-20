@@ -36,6 +36,7 @@ export interface MaterialActivity {
   manualUnreadRevision?: string;
 }
 export type ProviderProtocol = 'openai-compatible' | 'anthropic' | 'gemini';
+export type ReasoningEffort = 'auto' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const MAX_TRANSLATION_AUTO_RETRIES = 10;
 export interface ProviderConfig {
   baseUrl: string; model: string; protocol?: ProviderProtocol; apiKey?: string; hasKey?: boolean;
@@ -47,6 +48,8 @@ export interface ProviderConfig {
   openAITransport?: 'auto' | 'chat-completions' | 'responses';
   /** Mark reusable reference prefixes on models supporting explicit caching. */
   promptCache?: boolean;
+  /** Auto/absent leaves the provider's current thinking behavior unchanged. */
+  reasoningEffort?: ReasoningEffort;
   timeoutSeconds: number; maxOutputTokens: number; contextChars: number;
 }
 /** Request-only connection draft. Model discovery never persists these values. */
@@ -97,6 +100,8 @@ export interface TranslationRequestLog {
   usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; cacheWriteTokens?: number };
   requestMeta?: {
     transport: 'chat-completions' | 'responses' | 'anthropic' | 'gemini';
+    /** Requested override only; auto does not claim the channel's effective default. */
+    reasoningEffort?: ReasoningEffort;
     inputChars: number; cachePrefixChars: number; prefixHash: string;
     /** Longest marked reusable prefix, including history; not measured tokens. */
     cacheReusableChars?: number;
@@ -170,6 +175,8 @@ export interface TranslationState {
   resultRevision?: string;
   /** Optional saved-model override for this material; absent means follow the global translation default. */
   translationModelId?: string;
+  /** This card's explicit thinking choice; absent/auto does not send a thinking override. */
+  translationReasoningEffort?: ReasoningEffort;
   /** Last file confirmed written by the desktop app; browser downloads are not recorded as disk saves. */
   lastExport?: TranslationExportRecord;
   /** Computed on read from lastExport and the current working state. */

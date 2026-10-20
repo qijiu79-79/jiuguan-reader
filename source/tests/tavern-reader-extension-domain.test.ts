@@ -25,7 +25,7 @@ test('HTTP-compatible hashing preserves readable-material fingerprints and stale
   assert.notEqual((await buildReadingDocument(changed, hashDependencies)).fingerprint, native.fingerprint);
 });
 
-test('reading document strips opening aliases and non-prompt metadata from a clone', async () => {
+test('reading document preserves each labeled opening and strips non-prompt metadata from a clone', async () => {
   const material: ReadingMaterial = {
     characterKey: 'character:mina',
     characterName: 'Mina',
@@ -86,11 +86,16 @@ test('reading document strips opening aliases and non-prompt metadata from a clo
   assert.deepEqual(material.card, originalCard, 'the original Tavern card must never be changed');
   assert.match(allReadableText, /Mina spent years searching/u);
   assert.match(allReadableText, /The player arrives at the archive/u);
+  assert.match(allReadableText, /DATA_FIRST_SNAIL/u);
+  assert.match(allReadableText, /DATA_ALT_SNAIL/u);
+  assert.match(allReadableText, /DATA_GROUP_SNAIL/u);
   assert.match(allReadableText, /making a promise long ago/u);
   assert.match(allReadableText, /The sister is alive/u);
   assert.doesNotMatch(allReadableText, /ROOT_CREATOR|ROOT_TAGS|DATA_CREATOR|DATA_TAGS|WORLD_ENTRY_COMMENT|WORLD_ENTRY_TITLE|The Missing Sister/u);
-  assert.doesNotMatch(allReadableText, /ROOT_(?:FIRST|ALT|GROUP)|DATA_(?:FIRST|ALT|GROUP)/u);
-  assert.ok(document.sources.every((source) => !source.label.includes('开场白')));
+  assert.doesNotMatch(allReadableText, /ROOT_(?:FIRST|ALT|GROUP)/u, 'nested card fields take precedence over top-level aliases');
+  assert.ok(document.sources.some((source) => source.label === '主开场白' && source.text === 'DATA_FIRST_SNAIL'));
+  assert.ok(document.sources.some((source) => source.label === '备用开场白 1' && source.text === 'DATA_ALT_SNAIL'));
+  assert.ok(document.sources.some((source) => source.label === '群聊开场白 1' && source.text === 'DATA_GROUP_SNAIL'));
   assert.deepEqual(document.sources.map((source) => source.id), document.sources.map((_, index) => `[S${index + 1}]`));
   assert.ok(document.warnings.some((warning) => warning.includes('全局世界书和聊天世界书')));
 });
@@ -317,7 +322,7 @@ test('worldbook deduplication preserves exact keyword casing and body text', asy
   assert.ok(rules.some((source) => source.text.includes('正文：\nBody  with Case.')));
 });
 
-test('fingerprint follows readable material but ignores greetings and non-prompt metadata', async () => {
+test('fingerprint follows readable openings and worldbooks but ignores non-prompt metadata', async () => {
   const base: ReadingMaterial = {
     characterKey: 'character:mina',
     characterName: 'Mina',
@@ -371,7 +376,7 @@ test('fingerprint follows readable material but ignores greetings and non-prompt
   repeatedWarning.warnings = [missingWorldbookWarning, missingWorldbookWarning];
   const sameDeduplicatedWarning = await buildReadingDocument(repeatedWarning);
 
-  assert.equal(first.fingerprint, sameReadableSurface.fingerprint);
+  assert.notEqual(first.fingerprint, sameReadableSurface.fingerprint, 'opening changes invalidate the exact saved reading snapshot');
   assert.equal(first.fingerprint, sameMetadataFreeSurface.fingerprint);
   assert.notEqual(first.fingerprint, changedWorldbook.fingerprint);
   assert.notEqual(first.fingerprint, changedScope.fingerprint);

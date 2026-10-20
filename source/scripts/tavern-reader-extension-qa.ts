@@ -12,7 +12,12 @@ const MOCK_ALTERNATE_MODEL = 'reader-qa-alternate-with-a-long-model-identifier-2
 const MOCK_SERVICE = 'jiuguan-reader-qa-mock';
 const MOCK_INDEPENDENT_KEY = 'reader-qa-independent-only-fake';
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
-const GREETING_MARKER = 'GREETING_MUST_NOT_BE_SENT';
+const OPENING_MARKERS = [
+  { id: 'main', marker: 'MAIN_OPENING_MUST_BE_READ' },
+  { id: 'alternate-1', marker: 'ALTERNATE_OPENING_1_MUST_BE_READ' },
+  { id: 'alternate-2', marker: 'ALTERNATE_OPENING_2_MUST_BE_READ' },
+  { id: 'group-1', marker: 'GROUP_OPENING_MUST_BE_READ' },
+] as const;
 const UNRELATED_WORLD_MARKER = 'UNRELATED_WORLD_MUST_NOT_BE_SENT';
 const AUTHOR_NOTES_MARKER = 'AUTHOR_NOTES_MUST_NOT_BE_SENT';
 const METADATA_TAGS_MARKER = 'METADATA_TAGS_MUST_NOT_BE_SENT';
@@ -33,6 +38,7 @@ interface SafeStats {
   lastModelListUsedIndependentKey: boolean | null;
   lastGenerationUsedIndependentKey: boolean | null;
   greetingMarkerSeen: boolean;
+  openingMarkersSeen: string[];
   unrelatedWorldMarkerSeen: boolean;
   authorNotesMarkerSeen: boolean;
   metadataTagsMarkerSeen: boolean;
@@ -103,6 +109,7 @@ const stats: SafeStats = {
   lastModelListUsedIndependentKey: null,
   lastGenerationUsedIndependentKey: null,
   greetingMarkerSeen: false,
+  openingMarkersSeen: [],
   unrelatedWorldMarkerSeen: false,
   authorNotesMarkerSeen: false,
   metadataTagsMarkerSeen: false,
@@ -268,6 +275,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       lastModelListUsedIndependentKey: stats.lastModelListUsedIndependentKey,
       lastGenerationUsedIndependentKey: stats.lastGenerationUsedIndependentKey,
       greetingMarkerSeen: stats.greetingMarkerSeen,
+      openingMarkersSeen: stats.openingMarkersSeen,
       unrelatedWorldMarkerSeen: stats.unrelatedWorldMarkerSeen,
       authorNotesMarkerSeen: stats.authorNotesMarkerSeen,
       metadataTagsMarkerSeen: stats.metadataTagsMarkerSeen,
@@ -358,6 +366,7 @@ function resetStats(): void {
   stats.lastModelListUsedIndependentKey = null;
   stats.lastGenerationUsedIndependentKey = null;
   stats.greetingMarkerSeen = false;
+  stats.openingMarkersSeen = [];
   stats.unrelatedWorldMarkerSeen = false;
   stats.authorNotesMarkerSeen = false;
   stats.metadataTagsMarkerSeen = false;
@@ -388,12 +397,13 @@ async function handleCompletion(request: IncomingMessage, response: ServerRespon
     return;
   }
 
-  const hasGreetingMarker = rawBody.includes(GREETING_MARKER);
+  const openingMarkersSeen = OPENING_MARKERS.filter(({ marker }) => rawBody.includes(marker)).map(({ id }) => id);
   const hasUnrelatedMarker = rawBody.includes(UNRELATED_WORLD_MARKER);
   const hasAuthorNotesMarker = rawBody.includes(AUTHOR_NOTES_MARKER);
   const hasMetadataTagsMarker = rawBody.includes(METADATA_TAGS_MARKER);
-  const hasExcludedMarker = hasGreetingMarker || hasUnrelatedMarker || hasAuthorNotesMarker || hasMetadataTagsMarker;
-  stats.greetingMarkerSeen ||= hasGreetingMarker;
+  const hasExcludedMarker = hasUnrelatedMarker || hasAuthorNotesMarker || hasMetadataTagsMarker;
+  stats.greetingMarkerSeen ||= openingMarkersSeen.length > 0;
+  stats.openingMarkersSeen = [...new Set([...stats.openingMarkersSeen, ...openingMarkersSeen])];
   stats.unrelatedWorldMarkerSeen ||= hasUnrelatedMarker;
   stats.authorNotesMarkerSeen ||= hasAuthorNotesMarker;
   stats.metadataTagsMarkerSeen ||= hasMetadataTagsMarker;
@@ -497,7 +507,7 @@ function buildMockAnswer(userText: string): string {
   const question = findUserQuestion(userText);
   if (question) return buildFollowUpAnswer(userText, question, blocks, availableRefs);
 
-  const lines = ['【本地模拟模型回复，仅用于软件验收，不代表真实模型效果】'];
+  const lines = ['【本地模拟模型回复，仅用于软件验收，不代表真实模型效果】', '**人物设定速览：**'];
   const keeperBlock = blocks.find((block) => /角色设定与经历/u.test(block.label))
     ?? blocks.find((block) => /lighthouse keeper|灯塔看守|灯塔守望/iu.test(block.text));
   const scenarioBlock = blocks.find((block) => /背景与当前情境/u.test(block.label));
@@ -531,11 +541,27 @@ function buildMockAnswer(userText: string): string {
     lines.push(`**条件设定：**风暴铃连续响三次时，旧礁石救援路线才会开放一晚；这是有条件的分支，不是一直生效的规则，也不能据此推断 Storm 的命运。${citationFor(conditional, allText, /条件设定|风暴铃|conditional/iu, availableRefs)}`);
   }
 
-  if (lines.length === 1) {
+  const openingBlocks = blocks.filter((block) => /^(?:主开场白|备用开场白 \d+|群聊开场白 \d+)/u.test(block.label));
+  const openingLines = openingBlocks.map((block) => {
+    const label = block.label.replace(/白$/u, '');
+    const description = /主开场白/u.test(block.label)
+      ? '玛拉在灯塔档案室迎接玩家。'
+      : /备用开场白/u.test(block.label)
+        ? '这条备用开场呈现另一种相遇情境。'
+        : '这条群聊开场让多名参与者一同进入情境。';
+    return `${label}：${description}${citationFor(block, allText, /开场白/u, availableRefs)}`;
+  });
+  const openingSectionIndex = lines.length;
+  if (openingLines.length) lines.push('**开场白速览：**', ...openingLines);
+
+  if (lines.length === 2) {
     const fallback = availableRefs[0];
     lines.push(`本段已收到资料，但没有包含灯塔经历、关系或世界书规则；模拟器不补写未出现在本段的设定。${fallback ? ` ${fallback}` : ''}`);
   }
-  if (userText.includes('500 字以内')) return lines.slice(0, 5).join('\n\n');
+  if (userText.includes('500 字以内')) {
+    const overview = lines.slice(0, openingSectionIndex).slice(0, 6);
+    return [...overview, ...(openingLines.length ? ['**开场白速览：**', ...openingLines] : [])].join('\n\n');
+  }
   return lines.join('\n\n');
 }
 
@@ -792,6 +818,12 @@ async function verifySeed(
   if (extensions.world !== primaryWorldbook) throw new Error('The synthetic card did not retain its primary worldbook binding.');
   if (typeof data.creator_notes !== 'string' || !data.creator_notes.includes(AUTHOR_NOTES_MARKER)) {
     throw new Error('The synthetic card is missing its author-notes exclusion marker.');
+  }
+  const alternateGreetings = Array.isArray(data.alternate_greetings) ? data.alternate_greetings : [];
+  if (typeof data.first_mes !== 'string' || !data.first_mes.includes(OPENING_MARKERS[0].marker)
+    || !alternateGreetings.some((greeting) => typeof greeting === 'string' && greeting.includes(OPENING_MARKERS[1].marker))
+    || !alternateGreetings.some((greeting) => typeof greeting === 'string' && greeting.includes(OPENING_MARKERS[2].marker))) {
+    throw new Error('The synthetic card is missing its expected main or alternate opening markers.');
   }
   if (!Array.isArray(data.tags) || !data.tags.includes(METADATA_TAGS_MARKER)) {
     throw new Error('The synthetic card is missing its metadata-tags exclusion marker.');

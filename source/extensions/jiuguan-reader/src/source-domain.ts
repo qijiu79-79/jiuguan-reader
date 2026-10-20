@@ -3,12 +3,6 @@ import type { Material, ReaderSource } from '../../../config/tavern-types.js';
 import { sha256Hex, type HashDependencies } from './browser-compat.js';
 import type { ReadingDocument, ReadingMaterial, SavedReading } from './types.js';
 
-const GREETING_FIELDS = new Set([
-  'first_mes', 'firstmessage', 'first_message', 'firstmes',
-  'alternate_greetings', 'alternategreetings', 'alternate_greeting', 'alternategreeting',
-  'group_only_greetings', 'grouponlygreetings', 'group_only_greeting', 'grouponlygreeting',
-]);
-
 const EXCLUDED_CARD_METADATA_FIELDS = new Set(['creatornotes', 'creatorcomment', 'tags']);
 const WORLDBOOK_ROOT_FIELDS = ['entries', 'lorebook', 'worldbook', 'data'] as const;
 
@@ -40,18 +34,17 @@ export function getFollowUpDocument(current: ReadingDocument | null, saved: Save
 
 /**
  * Build the exact reading surface for the extension. The card is cloned before
- * greeting fields are removed, and only explicitly linked character worldbooks
+ * non-prompt metadata is removed; labeled opening sources remain available for
+ * the separate one-line overview. Only explicitly linked character worldbooks
  * are considered; global and chat-scoped books are deliberately out of scope.
  */
 export async function buildReadingDocument(material: ReadingMaterial, hashDependencies: HashDependencies = {}): Promise<ReadingDocument> {
   if (!material.characterKey.trim()) throw new Error('当前角色没有稳定标识，无法保存独立读卡记录。');
 
   const card = cloneRecord(material.card);
-  stripGreetingFields(card);
   stripCardMetadataFields(card);
   const data = asRecord(card.data);
   if (data) {
-    stripGreetingFields(data);
     stripCardMetadataFields(data);
   }
 
@@ -486,13 +479,6 @@ function renderMergedWorldbook(item: MergedWorldbookSource): ReaderSource {
 
 function isWorldbookSource(source: ReaderSource): boolean {
   return source.label.startsWith('世界书 · ');
-}
-
-function stripGreetingFields(record: Record<string, unknown>): void {
-  for (const key of Object.keys(record)) {
-    const normalized = key.replace(/[-\s]/gu, '').toLocaleLowerCase();
-    if (GREETING_FIELDS.has(normalized)) delete record[key];
-  }
 }
 
 function stripCardMetadataFields(record: Record<string, unknown>): void {

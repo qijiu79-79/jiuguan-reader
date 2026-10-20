@@ -1,6 +1,6 @@
 {
   "name": "jiuguan-yika",
-  "version": "0.2.41",
+  "version": "0.2.49",
   "description": "本地角色卡读卡助手与选择性翻译工作台",
   "author": "酒馆译卡 contributors; based on CardLoom Translate",
   "private": true,
@@ -11,10 +11,13 @@
     "dev": "concurrently -k -n api,web -c cyan,green \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
-    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "build": "npm run typecheck && node scripts/build-browser-reader.mjs && vite build && tsc -p tsconfig.server.json",
     "build:electron": "node scripts/clean-electron.mjs && tsc -p tsconfig.electron.json",
     "typecheck:reader-extension": "tsc -p tsconfig.reader-extension.json --noEmit",
     "build:reader-extension": "npm run typecheck:reader-extension && vite build --config extensions/jiuguan-reader/vite.config.ts",
+    "typecheck:browser-reader": "tsc -p tsconfig.browser-reader.json --noEmit",
+    "build:browser-reader": "npm run typecheck:browser-reader && node scripts/build-browser-reader.mjs",
+    "test:browser-reader": "tsx --test tests/tavern-browser-reader-*.test.ts tests/tavern-browser-userscript.test.ts tests/tavern-browser-pairing.test.ts",
     "package:reader-extension": "npm run build:reader-extension && node scripts/package-reader-extension.mjs",
     "test:reader-extension": "tsx --test tests/tavern-reader-extension-*.test.ts",
     "desktop:prepare": "npm run build && npm run build:electron",
@@ -25,7 +28,7 @@
     "test:tavern": "tsx --test tests/tavern-*.test.ts",
     "diagnostics": "node scripts/tavern-diagnostics.mjs",
     "start": "node dist-server/server/index.js",
-    "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.electron.json --noEmit && npm run typecheck:browser-reader",
     "test": "tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
@@ -95,7 +98,9 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "identity": null,
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false,
       "target": [{ "target": "dir", "arch": ["arm64"] }]
     },
     "win": {

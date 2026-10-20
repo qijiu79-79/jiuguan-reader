@@ -87,7 +87,7 @@ function assertCharacterKey(value: unknown): asserts value is string {
   }
 }
 
-function validateSavedReading(value: unknown, expectedCharacterKey: string): SavedReading {
+export function validateSavedReading(value: unknown, expectedCharacterKey: string): SavedReading {
   const record = asRecord(value);
   if (!record
     || record.schemaVersion !== 1

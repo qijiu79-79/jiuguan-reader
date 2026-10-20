@@ -67,6 +67,35 @@ export class ReaderController {
     return () => { this.jobListeners.delete(listener); };
   }
 
+  /** Release an idle hidden view without deleting saved results, keys or drafts. */
+  unloadCurrent(): boolean {
+    if (this.state.busy || this.state.unsaved) return false;
+    this.loadVersion += 1;
+    this.loadAbort?.abort();
+    this.loadAbort = null;
+    this.patch({loading: false, document: null, record: null, progress: null, error: '', status: ''});
+    return true;
+  }
+
+  /** Reopen a just-finished card even when its website route has already changed. */
+  async loadSaved(characterKey: string): Promise<void> {
+    if (this.state.busy || this.state.unsaved) return;
+    const version = ++this.loadVersion;
+    this.loadAbort?.abort();
+    this.patch({loading: true, error: ''});
+    try {
+      const record = await this.host.store.load(characterKey);
+      if (!record || record.sourceCount !== record.sources.length || !record.sources.length) throw new Error('这张卡没有完整的已保存原文，请回到原角色页重新打开。');
+      if (version !== this.loadVersion) return;
+      this.patch({record, document: {
+        characterKey: record.characterKey, characterName: record.characterName, fingerprint: record.fingerprint,
+        sources: record.sources, worldbooks: record.worldbooks, warnings: record.warnings,
+      }, progress: null, status: '已打开刚完成的解读与原文；没有调用 AI。'});
+    } catch (error) {
+      if (version === this.loadVersion) this.patch({error: errorMessage(error)});
+    } finally { if (version === this.loadVersion) this.patch({loading: false}); }
+  }
+
   async loadCurrent(): Promise<void> {
     // Closing/reopening the view or changing the host's current character is
     // not cancellation. Keep the active card snapshot until its job is saved.

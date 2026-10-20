@@ -42,8 +42,61 @@ test('小卡一次请求完成简短介绍，原样发送用户提示词并验�
     assert.equal(systems[0].content, settings.systemPrompt);
     const user = messages.find((message) => message.role === 'user')?.content ?? '';
     assert.ok(user.startsWith(settings.analysisPrompt), 'analysis prompt must appear verbatim at the start of user content');
+    assert.ok(user.includes('若原文没有明确的开场来源，不输出开场白速览'));
     assert.equal(messages.length, 2, 'no hidden system message may be added');
   }
+});
+
+test('single-chunk output keeps the setting overview separate from one line per opening', async () => {
+  const document = readingDocument([
+    {id: '[S1]', label: '主开场白', text: 'The main meeting begins in the lighthouse archive.'},
+    {id: '[S2]', label: '备用开场白 1', text: 'The first alternate starts with {{user}} returning.'},
+    {id: '[S3]', label: '备用开场白 2', text: 'The second alternate starts with a rescue map.'},
+  ]);
+  const settings = settingsFixture();
+  const requests: string[] = [];
+  const result = await analyzeDocument(document, settings, async messages => {
+    const user = messages.find(message => message.role === 'user')?.content ?? '';
+    requests.push(user);
+    return '人物设定速览：Mara 是灯塔馆员。[S1]\n\n开场白速览：\n主开场：[S1]\n备用开场 1：[S2]\n备用开场 2：[S3]';
+  }, new AbortController().signal);
+
+  assert.equal(result.chunkCount, 1);
+  assert.equal(requests.length, 1);
+  for (const source of document.sources) {
+    assert.ok(requests[0].includes(`${source.id} ${source.label}`));
+    assert.ok(requests[0].includes(source.text));
+  }
+  assert.match(requests[0], /先输出“人物设定速览”/u);
+  assert.match(requests[0], /主开场、备用开场 1、备用开场 2/u);
+  assert.deepEqual(result.text.split('\n').filter(line => /^(?:主开场|备用开场)/u.test(line)).length, 3);
+});
+
+test('all named openings reach the final separate-line overview, including after lossless multi-chunk reading', async () => {
+  const sources = [
+    {id: '[S1]', label: '主开场白', text: `MAIN_OPENING_START ${'Mara greets {{user}} at the archive. '.repeat(75)} MAIN_OPENING_END`},
+    {id: '[S2]', label: '备用开场白 1', text: `ALT_ONE_START ${'The player returns with a clue. '.repeat(75)} ALT_ONE_END`},
+    {id: '[S3]', label: '备用开场白 2', text: `ALT_TWO_START ${'Mara reopens the old map room. '.repeat(75)} ALT_TWO_END`},
+  ];
+  const settings = settingsFixture(6_000);
+  const requests: string[] = [];
+  const result = await analyzeDocument(readingDocument(sources), settings, async messages => {
+    const user = messages.find(message => message.role === 'user')?.content ?? '';
+    requests.push(user);
+    if (user.includes('<原文资料>')) return '本段依据已按来源保留。 [S1] [S2] [S3]';
+    return '人物设定速览：[S1]\n\n开场白速览：\n主开场：[S1]\n备用开场 1：[S2]\n备用开场 2：[S3]';
+  }, new AbortController().signal);
+
+  assert.ok(result.chunkCount > 1, 'long openings must exercise complete chunk coverage');
+  const sourceRequests = requests.filter(request => request.includes('<原文资料>'));
+  for (const marker of ['MAIN_OPENING_START', 'MAIN_OPENING_END', 'ALT_ONE_START', 'ALT_ONE_END', 'ALT_TWO_START', 'ALT_TWO_END']) {
+    assert.ok(sourceRequests.some(request => request.includes(marker)), `source part containing ${marker} was not sent`);
+  }
+  const final = requests.find(request => request.includes('<完整分块笔记>')) ?? '';
+  assert.match(final, /开场白速览/u);
+  assert.match(final, /每个来源单独一行/u);
+  assert.match(final, /合并相似项或省略条目/u);
+  assert.equal(result.text.split('\n').filter(line => /^(?:主开场|备用开场)/u.test(line)).length, 3);
 });
 
 test('long source text is read in full, then long chunk notes are combined through the hierarchy', async () => {
